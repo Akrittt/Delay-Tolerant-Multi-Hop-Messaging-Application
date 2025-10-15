@@ -34,11 +34,15 @@ import com.example.dtn.data.MessageDao;
 import com.example.dtn.network.ClientThread;
 import com.example.dtn.network.ServerThread;
 import com.example.dtn.network.WifiDirectBroadcastReceiver;
+import com.example.dtn.routing.EpidemicRouting;
+import com.example.dtn.routing.RoutingProtocol;
 import com.example.dtn.security.CryptoUtils;
+import com.example.dtn.utils.Logger;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -77,12 +81,18 @@ public class MainActivity extends AppCompatActivity {
     ArrayList<String> chatMessages = new ArrayList<>();
     ArrayAdapter<String> chatAdapter;
 
+    //logger
+    Logger logger;
+    RoutingProtocol activeRoutingProtocol;
+
     private String ownDeviceId = ""; // To store our own device name/ID
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        logger = Logger.getInstance(getApplicationContext());
 
         initializeUI();
         initializeWifiDirect();
@@ -176,6 +186,13 @@ public class MainActivity extends AppCompatActivity {
                     // Save message to own database
                     messageDao.insert(message);
 
+                    // Log the creation event
+                    String logDetails = String.format(Locale.US,
+                            "EVENT=MESSAGE_CREATED | MSG_ID=%s | FROM=%s | TO=%s | PRIORITY=%d",
+                            message.message_id, message.source_id, message.destination_id, message.priority);
+                    logger.logEvent(logDetails);
+
+
                     // Send message over the network
                     if (serverThread != null) serverThread.write(message);
                     if (clientThread != null) clientThread.write(message);
@@ -210,7 +227,7 @@ public class MainActivity extends AppCompatActivity {
             ArrayAdapter<String> adapter = new ArrayAdapter<>(getApplicationContext(), android.R.layout.simple_list_item_1, deviceNameArray);
             peerListView.setAdapter(adapter);
         }
-        if (peers.size() == 0) {
+        if (peers.isEmpty()) {
             Toast.makeText(getApplicationContext(), "No Devices Found", Toast.LENGTH_SHORT).show();
         }
     };
@@ -229,6 +246,16 @@ public class MainActivity extends AppCompatActivity {
                 clientThread = new ClientThread(groupOwnerAddress, handler);
                 clientThread.start();
             }
+
+            // Once connected, initialize the routing protocol and trigger forwarding
+            // TODO: In the next step, we will make this switchable
+            activeRoutingProtocol = new EpidemicRouting(getApplicationContext(), ownDeviceId);
+
+            // Use the executor to perform DB and network operations off the main thread
+            executor.execute(() -> {
+                List<Message> allMessages = messageDao.getAllMessages();
+                activeRoutingProtocol.forwardMessages(allMessages, serverThread, clientThread);
+            });
         }
     };
 
@@ -258,7 +285,11 @@ public class MainActivity extends AppCompatActivity {
                 // Save the new, valid message to our database (Store)
                 messageDao.insert(message);
 
-                // TODO: FORWARD the message based on routing protocol (Forward)
+                // The received message is now part of our store, so we re-evaluate forwarding for all messages
+                List<Message> allMessages = messageDao.getAllMessages();
+                if (activeRoutingProtocol != null) {
+                    activeRoutingProtocol.forwardMessages(allMessages, serverThread, clientThread);
+                }
 
             } catch (Exception e) {
                 Log.e("Receiver", "Error handling received message", e);
