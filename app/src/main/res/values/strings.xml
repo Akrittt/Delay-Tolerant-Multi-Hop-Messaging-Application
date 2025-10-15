@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">dtn</string>
+    <string-array name="priority_levels">
+        <item>NORMAL</item>
+        <item>HIGH</item>
+    </string-array>
+</resources>

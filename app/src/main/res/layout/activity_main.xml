@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    tools:context=".MainActivity">
+
+    <TextView
+        android:id="@+id/statusTextView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:text="Status: Disconnected"
+        android:textAlignment="center"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/peersHeader"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/statusTextView"
+        android:layout_marginTop="8dp"
+        android:text="Discovered Peers:" />
+
+    <ListView
+        android:id="@+id/peerListView"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:layout_below="@id/peersHeader"
+        android:background="#ECECEC" />
+
+    <ListView
+        android:id="@+id/chatListView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_above="@+id/messageEditText"
+        android:layout_below="@id/peerListView"
+        android:layout_marginTop="8dp"
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:stackFromBottom="true"
+        android:transcriptMode="alwaysScroll"/>
+
+    <Button
+        android:id="@+id/sendButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:text="Send" />
+
+    <Spinner
+        android:id="@+id/prioritySpinner"
+        android:layout_width="wrap_content"
+        android:layout_height="0dp"
+        android:layout_alignTop="@id/sendButton"
+        android:layout_alignBottom="@id/sendButton"
+        android:layout_toStartOf="@id/sendButton"
+        android:entries="@array/priority_levels" />
+
+    <EditText
+        android:id="@+id/messageEditText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_alignParentStart="true"
+        android:layout_alignParentBottom="true"
+        android:layout_toStartOf="@id/prioritySpinner"
+        android:hint="Type a message"
+        android:inputType="text" />
+
+</RelativeLayout>
