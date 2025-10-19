@@ -5,24 +5,21 @@ import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pDeviceList;
 import android.net.wifi.p2p.WifiP2pInfo;
-import android.content.SharedPreferences;
-import android.view.Menu;
-import android.view.MenuInflater;
-import android.view.MenuItem;
-
-import java.util.Collections;
-import java.util.Comparator;
 import android.net.wifi.p2p.WifiP2pManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -49,6 +46,7 @@ import com.example.dtn.utils.Logger;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -94,10 +92,6 @@ public class MainActivity extends AppCompatActivity {
     public static final String KEY_ROUTING_PROTOCOL = "RoutingProtocol";
     private String currentProtocol = "EPIDEMIC"; // Default protocol
 
-    /**
-     * Inner class to manage the UI representation of a chat message,
-     * including its text and delivery status.
-     */
     public static class ChatMessage {
         String text;
         boolean isDelivered;
@@ -110,7 +104,6 @@ public class MainActivity extends AppCompatActivity {
         @NonNull
         @Override
         public String toString() {
-            // Display ✓ for delivered, ... for sending
             return text + (isDelivered ? " ✓" : " ...");
         }
     }
@@ -217,10 +210,11 @@ public class MainActivity extends AppCompatActivity {
                     message.encrypted_payload = CryptoUtils.encrypt(msgText);
                     message.checksum = CryptoUtils.generateChecksum(message.encrypted_payload);
                     message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
-                    message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ? SprayAndWaitRouting.INITIAL_COPIES : 1;
                     message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000); // 2-hour TTL
                     message.hop_count = 0;
-                    message.copy_count = 8; // Default for Spray & Wait
+
+                    // THE FIX: The single, correct line for setting the copy count.
+                    message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ? SprayAndWaitRouting.INITIAL_COPIES : 1;
 
                     messageDao.insert(message);
 
@@ -237,8 +231,6 @@ public class MainActivity extends AppCompatActivity {
             });
         });
     }
-
-    // --- Wi-Fi Direct Callbacks ---
 
     public WifiP2pManager.PeerListListener peerListListener = peerList -> {
         if (!peerList.getDeviceList().equals(peers)) {
@@ -271,12 +263,12 @@ public class MainActivity extends AppCompatActivity {
             clientThread = new ClientThread(groupOwnerAddress, handler);
             clientThread.start();
         }
-        // When connected, trigger the forwarding logic
         WifiP2pDevice connectedPeer = findConnectedPeer();
         if(connectedPeer != null) {
             triggerForwardingLogic(connectedPeer);
         }
     };
+
     private WifiP2pDevice findConnectedPeer() {
         for(WifiP2pDevice peer : peers) {
             if(peer.status == WifiP2pDevice.CONNECTED) {
@@ -285,13 +277,11 @@ public class MainActivity extends AppCompatActivity {
         }
         return null;
     }
+
     private void triggerForwardingLogic(final WifiP2pDevice peer) {
         executor.execute(() -> {
-            // 1. Get all messages from the database
             List<Message> allMessages = messageDao.getAllMessages();
             List<Message> messagesToForward = new ArrayList<>();
-
-            // 2. Filter out expired messages (TTL Check)
             long currentTime = System.currentTimeMillis();
             for (Message msg : allMessages) {
                 if (msg.ttl_timestamp > currentTime) {
@@ -300,24 +290,20 @@ public class MainActivity extends AppCompatActivity {
                     logger.logEvent("EVENT=MESSAGE_DROPPED_TTL | MSG_ID=" + msg.message_id);
                 }
             }
-
-            // 3. Sort for congestion control (Priority & then by newest)
             Collections.sort(messagesToForward, (m1, m2) -> {
-                int priorityCompare = Integer.compare(m2.priority, m1.priority); // High priority first
+                int priorityCompare = Integer.compare(m2.priority, m1.priority);
                 if (priorityCompare == 0) {
-                    return Long.compare(m2.ttl_timestamp, m1.ttl_timestamp); // Freshest TTL first
+                    return Long.compare(m2.ttl_timestamp, m1.ttl_timestamp);
                 }
                 return priorityCompare;
             });
 
-            // 4. Initialize the correct routing protocol
             if (currentProtocol.equals("SPRAY_AND_WAIT")) {
-                activeRoutingProtocol = new SprayAndWaitRouting(getApplicationContext(), ownDeviceId, messageDao, executor);
+                activeRoutingProtocol = new SprayAndWaitRouting(getApplicationContext(), ownDeviceId, messageDao);
             } else {
                 activeRoutingProtocol = new EpidemicRouting(getApplicationContext(), ownDeviceId);
             }
 
-            // 5. Execute forwarding
             if (activeRoutingProtocol != null) {
                 activeRoutingProtocol.forwardMessages(messagesToForward, peer, serverThread, clientThread);
             }
@@ -328,8 +314,6 @@ public class MainActivity extends AppCompatActivity {
         this.ownDeviceId = name;
         Log.d("MainActivity", "This device name is set to: " + ownDeviceId);
     }
-
-    // --- Message Handling Logic ---
 
     private void handleReceivedMessage(Message message) {
         executor.execute(() -> {
@@ -351,22 +335,18 @@ public class MainActivity extends AppCompatActivity {
 
     private void processDataMessage(Message message) throws Exception {
         Message existing = messageDao.getMessageById(message.message_id);
-        if (existing != null) return; // Duplicate
+        if (existing != null) return;
 
         messageDao.insert(message);
-
-        String decryptedText = CryptoUtils.decrypt(message.encrypted_payload);
-        runOnUiThread(() -> {
-            chatMessages.add(new ChatMessage(message.source_id + ": " + decryptedText, true)); // True because it's delivered to us
-            chatAdapter.notifyDataSetChanged();
-        });
-
         if (ownDeviceId.equals(message.destination_id)) {
+            String decryptedText = CryptoUtils.decrypt(message.encrypted_payload);
+            runOnUiThread(() -> {
+                chatMessages.add(new ChatMessage(message.source_id + ": " + decryptedText, true));
+                chatAdapter.notifyDataSetChanged();
+            });
             logger.logEvent("EVENT=MESSAGE_DELIVERED | MSG_ID=" + message.message_id);
             generateAndSendAck(message);
         }
-
-        // Forward the message to other peers based on the routing protocol
         WifiP2pDevice connectedPeer = findConnectedPeer();
         if(connectedPeer != null) {
             triggerForwardingLogic(connectedPeer);
@@ -392,13 +372,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void processAck(Message ackMessage) throws Exception {
         if (!ownDeviceId.equals(ackMessage.destination_id)) {
-            // Not for me, but I should store and forward it
             Message existing = messageDao.getMessageById(ackMessage.message_id);
             if (existing == null) {
-                // This is a new ACK for someone else. Store it in our database.
                 messageDao.insert(ackMessage);
-
-                // Trigger the forwarding logic to pass this ACK along to the next peer.
                 WifiP2pDevice connectedPeer = findConnectedPeer();
                 if (connectedPeer != null) {
                     triggerForwardingLogic(connectedPeer);
@@ -407,7 +383,6 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // This ACK is for me.
         String originalMessageId = CryptoUtils.decrypt(ackMessage.encrypted_payload);
         Message messageToUpdate = messageDao.getMessageById(originalMessageId);
 
@@ -428,8 +403,6 @@ public class MainActivity extends AppCompatActivity {
             });
         }
     }
-
-    // --- Permissions and Lifecycle ---
 
     private void discoverPeers() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED ||
@@ -490,6 +463,7 @@ public class MainActivity extends AppCompatActivity {
         super.onPause();
         unregisterReceiver(receiver);
     }
+
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         MenuInflater inflater = getMenuInflater();

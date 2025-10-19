@@ -69,6 +69,7 @@
         android:layout_alignParentBottom="true"
         android:layout_toStartOf="@id/prioritySpinner"
         android:hint="Type a message"
-        android:inputType="text" />
+        android:inputType="text"
+        android:minHeight="48dp" />
 
 </RelativeLayout>

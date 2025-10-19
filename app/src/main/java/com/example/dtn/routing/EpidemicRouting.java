@@ -11,11 +11,10 @@ import com.example.dtn.utils.Logger;
 import java.util.List;
 import java.util.Locale;
 
+public class EpidemicRouting implements RoutingProtocol {
 
-public abstract class EpidemicRouting implements RoutingProtocol {
-
-    private Logger logger;
-    private String ownDeviceId;
+    private final Logger logger;
+    private final String ownDeviceId;
 
     public EpidemicRouting(Context context, String ownDeviceId) {
         this.logger = Logger.getInstance(context);
@@ -26,7 +25,7 @@ public abstract class EpidemicRouting implements RoutingProtocol {
     public void forwardMessages(List<Message> messagesToForward, WifiP2pDevice peer, ServerThread serverThread, ClientThread clientThread) {
         for (Message message : messagesToForward) {
             message.hop_count++;
-            logger.logEvent(String.format("EVENT=MESSAGE_FORWARDED | MSG_ID=%s | FROM=%s | TO=%s",
+            logger.logEvent(String.format(Locale.US, "EVENT=MESSAGE_FORWARDED | MSG_ID=%s | FROM=%s | TO=%s",
                     message.message_id, ownDeviceId, peer.deviceName));
 
             if (serverThread != null) {
