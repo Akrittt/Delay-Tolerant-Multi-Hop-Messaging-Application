@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/menu_epidemic"
+        android:title="Use Epidemic Routing" />
+    <item
+        android:id="@+id/menu_spray_and_wait"
+        android:title="Use Spray and Wait" />
+</menu>
