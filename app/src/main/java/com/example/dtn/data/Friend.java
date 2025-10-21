@@ -14,5 +14,5 @@ public class Friend {
 
     public long lastEncounteredTimestamp; // When we last connected to this friend
 
-    public Friend(){}
+
 }
