@@ -6,11 +6,11 @@ import androidx.room.Database;
 import androidx.room.Room;
 import androidx.room.RoomDatabase;
 
-@Database(entities = {Message.class}, version = 4, exportSchema = false)
+@Database(entities = {Message.class, Friend.class}, version = 4, exportSchema = false)
 public abstract class AppDatabase extends RoomDatabase {
 
     public abstract MessageDao messageDao();
-    public abstract FriendDao friendDao(); // Add the new DAO abstract method
+    public abstract FriendDao friendDao();
 
     private static volatile AppDatabase INSTANCE;
 
