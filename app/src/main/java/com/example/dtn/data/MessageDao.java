@@ -11,15 +11,16 @@ import java.util.List;
 @Dao
 public interface MessageDao {
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    void insert(Message message);
+    // ... insert, update, getMessageById methods are unchanged ...
+    @Insert(onConflict = OnConflictStrategy.IGNORE) void insert(Message message);
+    @Update void update(Message message);
+    @Query("SELECT * FROM messages WHERE message_id = :messageId") Message getMessageById(String messageId);
 
     @Query("SELECT * FROM messages")
     List<Message> getAllMessages();
 
-    @Query("SELECT * FROM messages WHERE message_id = :messageId")
-    Message getMessageById(String messageId);
-
-    @Update
-    void update(Message message);
+    // --- NEW METHOD ---
+    // This query gets all messages where the TTL timestamp is in the future.
+    @Query("SELECT * FROM messages WHERE ttl_timestamp > :currentTime")
+    List<Message> getNonExpiredMessages(long currentTime);
 }
