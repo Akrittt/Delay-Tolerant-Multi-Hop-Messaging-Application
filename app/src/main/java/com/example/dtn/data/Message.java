@@ -9,6 +9,7 @@ import java.util.UUID;
 
 @Entity(tableName = "messages")
 public class Message implements Serializable { // Serializable is crucial for sending over sockets
+    private static final long serialVersionUID = 1L;
     public static final int TYPE_DATA = 0;
     public static final int TYPE_ACK = 1;
 

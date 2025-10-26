@@ -32,8 +32,8 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
-
 
 import com.example.dtn.data.AppDatabase;
 import com.example.dtn.data.Friend;
@@ -60,6 +60,8 @@ import java.util.concurrent.Executors;
 @SuppressLint("SetTextI18n")
 public class MainActivity extends AppCompatActivity {
 
+    private static final String TAG = "MainActivity";
+
     // --- Database & Data ---
     AppDatabase database;
     MessageDao messageDao;
@@ -67,10 +69,12 @@ public class MainActivity extends AppCompatActivity {
 
     // --- UI Elements ---
     public TextView statusTextView;
+    public TextView protocolTextView;
     ListView peerListView, chatListView;
     EditText messageEditText;
     Button sendButton;
     Spinner prioritySpinner;
+    Toolbar toolbar;
 
     // --- Wi-Fi Direct ---
     WifiP2pManager manager;
@@ -80,7 +84,8 @@ public class MainActivity extends AppCompatActivity {
     List<WifiP2pDevice> peers = new ArrayList<>();
     String[] deviceNameArray;
     WifiP2pDevice[] deviceArray;
-    private String ownDeviceId = ""; // This should be our device's MAC address (deviceAddress)
+    private String ownDeviceId = "";
+    private boolean isReceiverRegistered = false;
 
     // --- Networking & Threads ---
     ServerThread serverThread;
@@ -102,17 +107,30 @@ public class MainActivity extends AppCompatActivity {
     public static class ChatMessage {
         String text;
         boolean isDelivered;
-        ChatMessage(String text, boolean isDelivered) { this.text = text; this.isDelivered = isDelivered; }
-        @NonNull @Override public String toString() { return text + (isDelivered ? " ✓" : " ..."); }
+        ChatMessage(String text, boolean isDelivered) {
+            this.text = text;
+            this.isDelivered = isDelivered;
+        }
+        @NonNull
+        @Override
+        public String toString() {
+            return text + (isDelivered ? " ✓" : " ...");
+        }
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Load saved protocol preference
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         currentProtocol = prefs.getString(KEY_ROUTING_PROTOCOL, "EPIDEMIC");
+
         initializeUI();
+        //setupToolbar();
+        updateProtocolDisplay();
+        setupPrioritySpinner();
         initializeWifiDirect();
         initializeDatabase();
         logger = Logger.getInstance(getApplicationContext());
@@ -123,19 +141,64 @@ public class MainActivity extends AppCompatActivity {
 
     private void initializeUI() {
         statusTextView = findViewById(R.id.statusTextView);
+        protocolTextView = findViewById(R.id.protocolTextView);
         peerListView = findViewById(R.id.peerListView);
         chatListView = findViewById(R.id.chatListView);
         messageEditText = findViewById(R.id.messageEditText);
         sendButton = findViewById(R.id.sendButton);
         prioritySpinner = findViewById(R.id.prioritySpinner);
+        toolbar = findViewById(R.id.toolbar);
 
         chatAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, chatMessages);
         chatListView.setAdapter(chatAdapter);
+
+        statusTextView.setText("Status: Disconnected");
+        statusTextView.setTextColor(0xFFF44336); // Red
+    }
+
+    private void setupToolbar() {
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setTitle("DTN Messenger");
+        }
+    }
+
+    private void updateProtocolDisplay() {
+        if (currentProtocol.equals("SPRAY_AND_WAIT")) {
+            protocolTextView.setText("Protocol: Spray and Wait 🔵");
+            protocolTextView.setTextColor(0xFF1976D2); // Blue
+        } else {
+            protocolTextView.setText("Protocol: Epidemic Routing 🟠");
+            protocolTextView.setTextColor(0xFFFF6F00); // Orange
+        }
+    }
+
+    private void setupPrioritySpinner() {
+        ArrayAdapter<CharSequence> adapter = ArrayAdapter.createFromResource(
+                this,
+                R.array.priority_options,
+                android.R.layout.simple_spinner_item
+        );
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        prioritySpinner.setAdapter(adapter);
+        prioritySpinner.setSelection(0); // Default to NORMAL
     }
 
     private void initializeWifiDirect() {
         manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
+        if (manager == null) {
+            Toast.makeText(this, "Wi-Fi Direct not supported", Toast.LENGTH_LONG).show();
+            Log.e(TAG, "WifiP2pManager is null");
+            return;
+        }
+
         channel = manager.initialize(this, getMainLooper(), null);
+        if (channel == null) {
+            Toast.makeText(this, "Failed to initialize Wi-Fi Direct", Toast.LENGTH_LONG).show();
+            Log.e(TAG, "Channel is null");
+            return;
+        }
+
         receiver = new WifiDirectBroadcastReceiver(manager, channel, this);
 
         intentFilter = new IntentFilter();
@@ -163,46 +226,62 @@ public class MainActivity extends AppCompatActivity {
 
     private void setListeners() {
         peerListView.setOnItemLongClickListener((parent, view, position, id) -> {
+            if (deviceArray == null || position >= deviceArray.length) {
+                return false;
+            }
             final WifiP2pDevice device = deviceArray[position];
             new AlertDialog.Builder(this)
                     .setTitle("Add Friend")
                     .setMessage("Do you want to add " + device.deviceName + " as a friend?")
-                    .setPositiveButton("Yes", (dialog, which) -> {
-                        addFriend(device);
-                    })
+                    .setPositiveButton("Yes", (dialog, which) -> addFriend(device))
                     .setNegativeButton("No", null)
                     .show();
             return true;
         });
 
         peerListView.setOnItemClickListener((parent, view, position, id) -> {
+            if (deviceArray == null || position >= deviceArray.length) {
+                Toast.makeText(this, "Invalid peer selection", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
             final WifiP2pDevice device = deviceArray[position];
             WifiP2pConfig config = new WifiP2pConfig();
             config.deviceAddress = device.deviceAddress;
 
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED ||
-                    ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Permission check failed before connect", Toast.LENGTH_SHORT).show();
-                return;
+            // Check permissions based on Android version
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "NEARBY_WIFI_DEVICES permission required", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+            } else {
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "Location permission required", Toast.LENGTH_SHORT).show();
+                    return;
+                }
             }
-            Log.d("MainActivity", "Attempting to connect to: " + device.deviceName); // Added log
+
+            Log.d(TAG, "Connecting to: " + device.deviceName);
             manager.connect(channel, config, new WifiP2pManager.ActionListener() {
                 @Override
                 public void onSuccess() {
                     Toast.makeText(getApplicationContext(), "Connecting to " + device.deviceName, Toast.LENGTH_SHORT).show();
-                    Log.d("MainActivity", "manager.connect onSuccess called."); // Added log
+                    Log.d(TAG, "Connection initiated");
                 }
                 @Override
                 public void onFailure(int reason) {
-                    Toast.makeText(getApplicationContext(), "Connection failed. Try again.", Toast.LENGTH_SHORT).show();
-                    // --- ADDED LOGGING ---
-                    Log.e("MainActivity", "manager.connect onFailure called. Reason code: " + reason);
+                    String failureReason = getConnectionFailureReason(reason);
+                    Toast.makeText(getApplicationContext(), "Connection failed: " + failureReason, Toast.LENGTH_SHORT).show();
+                    Log.e(TAG, "Connection failed: " + failureReason);
                 }
             });
         });
 
         sendButton.setOnClickListener(v -> {
-            String msgText = messageEditText.getText().toString();
+            String msgText = messageEditText.getText().toString().trim();
             if (msgText.isEmpty()) {
                 Toast.makeText(this, "Message is empty", Toast.LENGTH_SHORT).show();
                 return;
@@ -216,7 +295,8 @@ public class MainActivity extends AppCompatActivity {
             final Message message = new Message();
 
             runOnUiThread(() -> {
-                String displayText = String.format(Locale.US, "Me (%s): %s", message.message_id.substring(0, 8), msgText);
+                String displayText = String.format(Locale.US, "Me (%s): %s",
+                        message.message_id.substring(0, 8), msgText);
                 ChatMessage chatMessage = new ChatMessage(displayText, false);
                 chatMessages.add(chatMessage);
                 chatAdapter.notifyDataSetChanged();
@@ -232,36 +312,63 @@ public class MainActivity extends AppCompatActivity {
                     message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
                     message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000);
                     message.hop_count = 0;
-                    message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ? SprayAndWaitRouting.INITIAL_COPIES : 1;
+                    message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ?
+                            SprayAndWaitRouting.INITIAL_COPIES : 1;
 
                     messageDao.insert(message);
 
-                    String logDetails = String.format(Locale.US,
-                            "EVENT=MESSAGE_CREATED | MSG_ID=%s | FROM=%s | TO=%s | PRIORITY=%d",
-                            message.message_id, message.source_id, message.destination_id, message.priority);
-                    logger.logEvent(logDetails);
+                    // Send via whichever thread is active
+                    boolean sent = false;
+                    if (serverThread != null && serverThread.isAlive()) {
+                        serverThread.write(message);
+                        sent = true;
+                    } else if (clientThread != null && clientThread.isAlive()) {
+                        clientThread.write(message);
+                        sent = true;
+                    }
 
-                    if (serverThread != null) serverThread.write(message);
-                    if (clientThread != null) clientThread.write(message);
+                    if (!sent) {
+                        runOnUiThread(() ->
+                                Toast.makeText(this, "No active connection", Toast.LENGTH_SHORT).show()
+                        );
+                    }
                 } catch (Exception e) {
-                    Log.e("SendClick", "Error creating/sending message", e);
+                    Log.e(TAG, "Error sending message", e);
+                    runOnUiThread(() ->
+                            Toast.makeText(this, "Failed to send message", Toast.LENGTH_SHORT).show()
+                    );
                 }
             });
         });
     }
 
+    private String getConnectionFailureReason(int reason) {
+        switch (reason) {
+            case WifiP2pManager.ERROR: return "Internal error";
+            case WifiP2pManager.P2P_UNSUPPORTED: return "P2P unsupported";
+            case WifiP2pManager.BUSY: return "Busy";
+            default: return "Unknown (" + reason + ")";
+        }
+    }
+
     private void addFriend(WifiP2pDevice device) {
         executor.execute(() -> {
-            Friend existingFriend = friendDao.getFriendById(device.deviceAddress);
-            if (existingFriend == null) {
-                Friend newFriend = new Friend();
-                newFriend.deviceId = device.deviceAddress;
-                newFriend.friendlyName = device.deviceName;
-                newFriend.lastEncounteredTimestamp = 0;
-                friendDao.insert(newFriend);
-                runOnUiThread(() -> Toast.makeText(this, device.deviceName + " added as a friend.", Toast.LENGTH_SHORT).show());
-            } else {
-                runOnUiThread(() -> Toast.makeText(this, device.deviceName + " is already a friend.", Toast.LENGTH_SHORT).show());
+            try {
+                Friend existingFriend = friendDao.getFriendById(device.deviceAddress);
+                if (existingFriend == null) {
+                    Friend newFriend = new Friend();
+                    newFriend.deviceId = device.deviceAddress;
+                    newFriend.friendlyName = device.deviceName;
+                    newFriend.lastEncounteredTimestamp = 0;
+                    friendDao.insert(newFriend);
+                    runOnUiThread(() -> Toast.makeText(this, device.deviceName +
+                            " added as friend", Toast.LENGTH_SHORT).show());
+                } else {
+                    runOnUiThread(() -> Toast.makeText(this, device.deviceName +
+                            " already a friend", Toast.LENGTH_SHORT).show());
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error adding friend", e);
             }
         });
     }
@@ -270,78 +377,81 @@ public class MainActivity extends AppCompatActivity {
         if (!peerList.getDeviceList().equals(peers)) {
             peers.clear();
             peers.addAll(peerList.getDeviceList());
+
             deviceNameArray = new String[peerList.getDeviceList().size()];
             deviceArray = new WifiP2pDevice[peerList.getDeviceList().size()];
+
             int index = 0;
             for (WifiP2pDevice device : peerList.getDeviceList()) {
                 deviceNameArray[index] = device.deviceName;
                 deviceArray[index] = device;
                 index++;
             }
-            ArrayAdapter<String> adapter = new ArrayAdapter<>(getApplicationContext(), android.R.layout.simple_list_item_1, deviceNameArray);
+
+            ArrayAdapter<String> adapter = new ArrayAdapter<>(getApplicationContext(),
+                    android.R.layout.simple_list_item_1, deviceNameArray);
             peerListView.setAdapter(adapter);
-        }
-        if (peers.isEmpty()) {
-            // Toast.makeText(getApplicationContext(), "No Devices Found", Toast.LENGTH_SHORT).show(); // Maybe remove this toast for less noise
+
+            Log.d(TAG, "Discovered " + peers.size() + " peer(s)");
         }
     };
 
     public WifiP2pManager.ConnectionInfoListener connectionInfoListener = info -> {
-        // --- ADDED LOGGING ---
-        Log.d("MainActivity", "ConnectionInfoListener called.");
+        Log.d(TAG, "Connection info received - Group formed: " + info.groupFormed);
 
         final InetAddress groupOwnerAddress = info.groupOwnerAddress;
 
         if (info.groupFormed && info.isGroupOwner) {
-            if (serverThread == null) {
-                Log.d("MainActivity", "Group formed, I am the owner. Starting ServerThread."); // Added log
+            if (serverThread == null || !serverThread.isAlive()) {
+                Log.d(TAG, "Starting ServerThread");
                 statusTextView.setText("Status: Connected as Host");
+                statusTextView.setTextColor(0xFF4CAF50); // Green
                 serverThread = new ServerThread(handler);
                 serverThread.start();
-            } else {
-                Log.d("MainActivity", "Group formed, I am owner, but ServerThread already running."); // Added log
+
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    WifiP2pDevice connectedPeer = findConnectedPeer();
+                    if (connectedPeer != null) {
+                        triggerForwardingLogic(connectedPeer);
+                    }
+                }, 2000);
             }
         } else if (info.groupFormed) {
-            if (clientThread == null) {
-                Log.d("MainActivity", "Group formed, I am the client. Starting ClientThread."); // Added log
+            if (clientThread == null || !clientThread.isAlive()) {
+                Log.d(TAG, "Starting ClientThread");
                 statusTextView.setText("Status: Connected as Client");
+                statusTextView.setTextColor(0xFF4CAF50); // Green
                 clientThread = new ClientThread(groupOwnerAddress, handler);
                 clientThread.start();
-            } else {
-                Log.d("MainActivity", "Group formed, I am client, but ClientThread already running."); // Added log
-            }
-        } else {
-            Log.d("MainActivity", "ConnectionInfoListener called, but group not formed yet."); // Added log
-        }
 
-        WifiP2pDevice connectedPeer = findConnectedPeer();
-        if(connectedPeer != null) {
-            Log.d("MainActivity", "Found connected peer, triggering forwarding logic."); // Added log
-            triggerForwardingLogic(connectedPeer);
-        } else {
-            Log.d("MainActivity", "ConnectionInfoListener called, but could not find connected peer."); // Added log
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    WifiP2pDevice connectedPeer = findConnectedPeer();
+                    if (connectedPeer != null) {
+                        triggerForwardingLogic(connectedPeer);
+                    }
+                }, 2000);
+            }
         }
     };
 
     public void onDisconnect() {
-        Log.d("MainActivity", "onDisconnect called."); // Added log
+        Log.d(TAG, "Disconnected");
         statusTextView.setText("Status: Disconnected");
+        statusTextView.setTextColor(0xFFF44336); // Red
 
         if (serverThread != null) {
-            Log.d("MainActivity", "Closing ServerThread."); // Added log
             serverThread.close();
             serverThread = null;
         }
         if (clientThread != null) {
-            Log.d("MainActivity", "Closing ClientThread."); // Added log
             clientThread.close();
             clientThread = null;
         }
     }
 
     private WifiP2pDevice findConnectedPeer() {
-        for(WifiP2pDevice peer : peers) {
-            if(peer.status == WifiP2pDevice.CONNECTED) {
+        for (WifiP2pDevice peer : peers) {
+            if (peer.status == WifiP2pDevice.CONNECTED) {
                 return peer;
             }
         }
@@ -350,60 +460,72 @@ public class MainActivity extends AppCompatActivity {
 
     private void triggerForwardingLogic(final WifiP2pDevice peer) {
         executor.execute(() -> {
-            // ... (rest of the method is unchanged) ...
-            Friend connectedFriend = friendDao.getFriendById(peer.deviceAddress);
-            if (connectedFriend != null) {
-                connectedFriend.lastEncounteredTimestamp = System.currentTimeMillis();
-                friendDao.update(connectedFriend);
-            }
-
-            List<Message> allMessages = messageDao.getNonExpiredMessages(System.currentTimeMillis());
-            List<Message> messagesToForward = new ArrayList<>();
-
-            for (Message message : allMessages) {
-                if (peer.deviceAddress.equals(message.destination_id)) {
-                    messagesToForward.add(message);
-                    continue;
+            try {
+                Friend connectedFriend = friendDao.getFriendById(peer.deviceAddress);
+                if (connectedFriend != null) {
+                    connectedFriend.lastEncounteredTimestamp = System.currentTimeMillis();
+                    friendDao.update(connectedFriend);
                 }
 
-                Friend destinationFriend = friendDao.getFriendById(message.destination_id);
-                if (destinationFriend != null && connectedFriend != null) {
-                    if (connectedFriend.lastEncounteredTimestamp > destinationFriend.lastEncounteredTimestamp) {
+                List<Message> allMessages = messageDao.getNonExpiredMessages(System.currentTimeMillis());
+                List<Message> messagesToForward = new ArrayList<>();
+
+                for (Message message : allMessages) {
+                    if (peer.deviceAddress.equals(message.destination_id)) {
                         messagesToForward.add(message);
+                        continue;
+                    }
+
+                    Friend destinationFriend = friendDao.getFriendById(message.destination_id);
+                    if (destinationFriend != null && connectedFriend != null) {
+                        if (connectedFriend.lastEncounteredTimestamp > destinationFriend.lastEncounteredTimestamp) {
+                            messagesToForward.add(message);
+                        }
                     }
                 }
-            }
 
-            Collections.sort(messagesToForward, (m1, m2) -> {
-                int priorityCompare = Integer.compare(m2.priority, m1.priority);
-                return priorityCompare != 0 ? priorityCompare : Long.compare(m2.ttl_timestamp, m1.ttl_timestamp);
-            });
+                Collections.sort(messagesToForward, (m1, m2) -> {
+                    int priorityCompare = Integer.compare(m2.priority, m1.priority);
+                    return priorityCompare != 0 ? priorityCompare : Long.compare(m2.ttl_timestamp, m1.ttl_timestamp);
+                });
 
-            if (currentProtocol.equals("SPRAY_AND_WAIT")) {
-                activeRoutingProtocol = new SprayAndWaitRouting(getApplicationContext(), ownDeviceId, messageDao);
-            } else {
-                activeRoutingProtocol = new EpidemicRouting(getApplicationContext(), ownDeviceId);
-            }
+                if (currentProtocol.equals("SPRAY_AND_WAIT")) {
+                    activeRoutingProtocol = new SprayAndWaitRouting(getApplicationContext(), ownDeviceId, messageDao);
+                } else {
+                    activeRoutingProtocol = new EpidemicRouting(getApplicationContext(), ownDeviceId);
+                }
 
-            if (activeRoutingProtocol != null) {
-                activeRoutingProtocol.forwardMessages(messagesToForward, peer, serverThread, clientThread);
+                if (activeRoutingProtocol != null && !messagesToForward.isEmpty()) {
+                    activeRoutingProtocol.forwardMessages(messagesToForward, peer, serverThread, clientThread);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in forwarding logic", e);
             }
         });
     }
 
     @RequiresApi(api = Build.VERSION_CODES.Q)
     public void setOwnDeviceName(String deviceName) {
-        Log.d("MainActivity", "Attempting to set device name: " + deviceName); // Added log
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED || ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-            Log.w("MainActivity", "setOwnDeviceName: Permissions not granted, cannot request device info."); // Added log
-            return;
+        Log.d(TAG, "Setting device name: " + deviceName);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
+                    != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+        } else {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
         }
+
+        if (manager == null || channel == null) return;
+
         manager.requestDeviceInfo(channel, device -> {
             if (device != null) {
                 this.ownDeviceId = device.deviceAddress;
-                Log.d("MainActivity", "This device ADDRESS is set to: " + this.ownDeviceId);
-            } else {
-                Log.w("MainActivity", "setOwnDeviceName: requestDeviceInfo returned null device."); // Added log
+                Log.d(TAG, "Device ID: " + this.ownDeviceId);
             }
         });
     }
@@ -415,13 +537,14 @@ public class MainActivity extends AppCompatActivity {
                     logger.logEvent("EVENT=MESSAGE_DROPPED_INVALID_CHECKSUM | MSG_ID=" + message.message_id);
                     return;
                 }
+
                 if (message.message_type == Message.TYPE_ACK) {
                     processAck(message);
                 } else {
                     processDataMessage(message);
                 }
             } catch (Exception e) {
-                Log.e("Receiver", "Error handling message", e);
+                Log.e(TAG, "Error handling message", e);
             }
         });
     }
@@ -443,7 +566,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         WifiP2pDevice connectedPeer = findConnectedPeer();
-        if(connectedPeer != null) {
+        if (connectedPeer != null) {
             triggerForwardingLogic(connectedPeer);
         }
     }
@@ -457,12 +580,17 @@ public class MainActivity extends AppCompatActivity {
         ackMessage.checksum = CryptoUtils.generateChecksum(ackMessage.encrypted_payload);
         ackMessage.priority = 1;
         ackMessage.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000);
+        ackMessage.hop_count = 0;
+        ackMessage.copy_count = 1;
 
         messageDao.insert(ackMessage);
         logger.logEvent("EVENT=ACK_GENERATED | FOR_MSG_ID=" + originalMessage.message_id);
 
-        if (serverThread != null) serverThread.write(ackMessage);
-        if (clientThread != null) clientThread.write(ackMessage);
+        if (serverThread != null && serverThread.isAlive()) {
+            serverThread.write(ackMessage);
+        } else if (clientThread != null && clientThread.isAlive()) {
+            clientThread.write(ackMessage);
+        }
     }
 
     private void processAck(Message ackMessage) throws Exception {
@@ -470,6 +598,7 @@ public class MainActivity extends AppCompatActivity {
             Message existing = messageDao.getMessageById(ackMessage.message_id);
             if (existing == null) {
                 messageDao.insert(ackMessage);
+
                 WifiP2pDevice connectedPeer = findConnectedPeer();
                 if (connectedPeer != null) {
                     triggerForwardingLogic(connectedPeer);
@@ -494,60 +623,82 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
                 chatAdapter.notifyDataSetChanged();
-                Toast.makeText(this, "Delivery Confirmed!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "✓ Delivery Confirmed!", Toast.LENGTH_SHORT).show();
             });
         }
     }
 
     private void discoverPeers() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED ||
-                ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "Permissions required for discovery were not granted.", Toast.LENGTH_SHORT).show();
+        if (manager == null || channel == null) {
+            Toast.makeText(this, "Wi-Fi Direct not initialized", Toast.LENGTH_SHORT).show();
             return;
         }
-        // --- ADDED LOG ---
-        Log.d("MainActivity", "Calling manager.discoverPeers()...");
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
+                    != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Permission required", Toast.LENGTH_SHORT).show();
+                return;
+            }
+        } else {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Permission required", Toast.LENGTH_SHORT).show();
+                return;
+            }
+        }
+
+        Log.d(TAG, "Starting peer discovery");
         manager.discoverPeers(channel, new WifiP2pManager.ActionListener() {
             @Override
             public void onSuccess() {
-                // --- ADDED LOG ---
-                Log.d("MainActivity", "discoverPeers onSuccess.");
-                statusTextView.setText("Discovery Started");
+                Log.d(TAG, "Discovery started");
+                statusTextView.setText("Status: Discovering...");
+                statusTextView.setTextColor(0xFFFFC107); // Yellow
             }
             @Override
             public void onFailure(int reason) {
-                // --- ADDED LOG ---
-                Log.e("MainActivity", "discoverPeers onFailure. Reason: " + reason);
-                statusTextView.setText("Discovery Failed. Reason Code: " + reason);
+                Log.e(TAG, "Discovery failed: " + reason);
+                statusTextView.setText("Status: Discovery Failed");
             }
         });
     }
 
     private void requestPermissions() {
         List<String> permissionsToRequest = new ArrayList<>();
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION);
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            }
         }
+
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
                 permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
             }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
+                    != PackageManager.PERMISSION_GRANTED) {
                 permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES);
             }
         }
 
         if (!permissionsToRequest.isEmpty()) {
-            ActivityCompat.requestPermissions(this, permissionsToRequest.toArray(new String[0]), 1);
+            ActivityCompat.requestPermissions(this,
+                    permissionsToRequest.toArray(new String[0]), 1);
         } else {
             discoverPeers();
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == 1) {
             boolean allGranted = true;
@@ -559,10 +710,10 @@ public class MainActivity extends AppCompatActivity {
             }
 
             if (allGranted) {
-                Toast.makeText(this, "Permissions granted. Starting discovery.", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "✓ Permissions granted", Toast.LENGTH_SHORT).show();
                 discoverPeers();
             } else {
-                Toast.makeText(this, "Location & Storage permissions are required to run the app.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Permissions required", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -570,13 +721,25 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        registerReceiver(receiver, intentFilter);
+        if (receiver != null && intentFilter != null && !isReceiverRegistered) {
+            registerReceiver(receiver, intentFilter);
+            isReceiverRegistered = true;
+            Log.d(TAG, "Receiver registered");
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        unregisterReceiver(receiver);
+        if (receiver != null && isReceiverRegistered) {
+            try {
+                unregisterReceiver(receiver);
+                isReceiverRegistered = false;
+                Log.d(TAG, "Receiver unregistered");
+            } catch (IllegalArgumentException e) {
+                Log.e(TAG, "Receiver not registered", e);
+            }
+        }
     }
 
     @Override
@@ -590,16 +753,121 @@ public class MainActivity extends AppCompatActivity {
     public boolean onOptionsItemSelected(MenuItem item) {
         SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
         int itemId = item.getItemId();
+
         if (itemId == R.id.menu_epidemic) {
             currentProtocol = "EPIDEMIC";
-            Toast.makeText(this, "Switched to Epidemic Routing", Toast.LENGTH_SHORT).show();
+            updateProtocolDisplay();
+            Toast.makeText(this, "✓ Switched to Epidemic Routing", Toast.LENGTH_SHORT).show();
+
         } else if (itemId == R.id.menu_spray_and_wait) {
             currentProtocol = "SPRAY_AND_WAIT";
-            Toast.makeText(this, "Switched to Spray and Wait", Toast.LENGTH_SHORT).show();
+            updateProtocolDisplay();
+            Toast.makeText(this, "✓ Switched to Spray and Wait", Toast.LENGTH_SHORT).show();
+
+        } else if (itemId == R.id.menu_view_friends) {
+            showFriendsDialog();
+            return true;
+
+        } else if (itemId == R.id.menu_clear_messages) {
+            clearMessagesDialog();
+            return true;
+
+        } else if (itemId == R.id.menu_about) {
+            showAboutDialog();
+            return true;
         }
+
         editor.putString(KEY_ROUTING_PROTOCOL, currentProtocol);
         editor.apply();
         return true;
     }
-}
 
+    private void showFriendsDialog() {
+        executor.execute(() -> {
+            List<Friend> friends = friendDao.getAllFriends();
+            runOnUiThread(() -> {
+                if (friends.isEmpty()) {
+                    Toast.makeText(this, "No friends yet", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+
+                StringBuilder friendsList = new StringBuilder();
+                for (Friend friend : friends) {
+                    friendsList.append("📱 ").append(friend.friendlyName)
+                            .append("\n   ").append(friend.deviceId)
+                            .append("\n\n");
+                }
+
+                new AlertDialog.Builder(this)
+                        .setTitle("Friends (" + friends.size() + ")")
+                        .setMessage(friendsList.toString())
+                        .setPositiveButton("OK", null)
+                        .show();
+            });
+        });
+    }
+
+    private void clearMessagesDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Clear Messages")
+                .setMessage("Clear all chat messages?")
+                .setPositiveButton("Clear", (dialog, which) -> {
+                    chatMessages.clear();
+                    chatAdapter.notifyDataSetChanged();
+                    Toast.makeText(this, "Messages cleared", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showAboutDialog() {
+        String aboutText = "DTN Messenger v1.0\n\n" +
+                "Delay-Tolerant Network Messenger\n\n" +
+                "Features:\n" +
+                "• Epidemic Routing\n" +
+                "• Spray-and-Wait Routing\n" +
+                "• Wi-Fi Direct P2P\n" +
+                "• AES Encryption\n" +
+                "• Message Acknowledgements";
+
+        new AlertDialog.Builder(this)
+                .setTitle("About")
+                .setMessage(aboutText)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        Log.d(TAG, "onDestroy");
+
+        if (receiver != null && isReceiverRegistered) {
+            try {
+                unregisterReceiver(receiver);
+                isReceiverRegistered = false;
+            } catch (IllegalArgumentException e) {
+                Log.e(TAG, "Receiver not registered", e);
+            }
+        }
+
+        if (serverThread != null) {
+            serverThread.close();
+        }
+        if (clientThread != null) {
+            clientThread.close();
+        }
+
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdown();
+        }
+
+        if (logger != null) {
+            logger.shutdown();
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && channel != null) {
+            channel.close();
+        }
+    }
+}
