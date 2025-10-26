@@ -1,75 +1,228 @@
 <?xml version="1.0" encoding="utf-8"?>
-<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:padding="16dp"
+    android:background="#FAFAFA"
     tools:context=".MainActivity">
 
-    <TextView
-        android:id="@+id/statusTextView"
+    <!-- App Bar -->
+    <com.google.android.material.appbar.AppBarLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_alignParentTop="true"
-        android:text="Status: Disconnected"
-        android:textAlignment="center"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar">
 
-    <TextView
-        android:id="@+id/peersHeader"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_below="@id/statusTextView"
-        android:layout_marginTop="8dp"
-        android:text="Discovered Peers:" />
-
-    <ListView
-        android:id="@+id/peerListView"
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
-        android:layout_below="@id/peersHeader"
-        android:background="#ECECEC" />
+        android:layout_height="?attr/actionBarSize"
+        android:background="#2196F3"
+        app:title="DTN Messenger"
+        app:titleTextColor="@android:color/white"
+        app:popupTheme="@style/ThemeOverlay.AppCompat.Light" />
 
-    <ListView
-        android:id="@+id/chatListView"
+</com.google.android.material.appbar.AppBarLayout>
+
+    <!-- Main Content -->
+<ScrollView
+android:layout_width="match_parent"
+android:layout_height="match_parent"
+android:fillViewport="true"
+app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <!-- Status Section -->
+    <androidx.cardview.widget.CardView
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_above="@+id/messageEditText"
-        android:layout_below="@id/peerListView"
-        android:layout_marginTop="8dp"
-        android:divider="@null"
-        android:dividerHeight="0dp"
-        android:stackFromBottom="true"
-        android:transcriptMode="alwaysScroll"/>
-
-    <Button
-        android:id="@+id/sendButton"
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_alignParentEnd="true"
-        android:layout_alignParentBottom="true"
-        android:text="Send" />
+        android:layout_marginBottom="8dp"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="2dp"
+        app:contentPadding="12dp">
 
-    <Spinner
-        android:id="@+id/prioritySpinner"
-        android:layout_width="wrap_content"
-        android:layout_height="0dp"
-        android:layout_alignTop="@id/sendButton"
-        android:layout_alignBottom="@id/sendButton"
-        android:layout_toStartOf="@id/sendButton"
-        android:entries="@array/priority_levels" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
-    <EditText
-        android:id="@+id/messageEditText"
-        android:layout_width="0dp"
+            <TextView
+                android:id="@+id/statusTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Status: Disconnected"
+                android:textColor="#F44336"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:drawableStart="@android:drawable/presence_offline"
+                android:drawablePadding="8dp"
+                android:gravity="center_vertical" />
+
+            <TextView
+                android:id="@+id/protocolTextView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Protocol: Epidemic Routing"
+                android:textColor="#757575"
+                android:textSize="14sp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+    <!-- Available Peers Section -->
+    <androidx.cardview.widget.CardView
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_alignParentStart="true"
-        android:layout_alignParentBottom="true"
-        android:layout_toStartOf="@id/prioritySpinner"
-        android:hint="Type a message"
-        android:inputType="text"
-        android:minHeight="48dp" />
+        android:layout_marginBottom="8dp"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="2dp">
 
-</RelativeLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="📱 Available Peers"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="#212121"
+                android:padding="12dp"
+                android:background="#F5F5F5" />
+
+            <ListView
+                android:id="@+id/peerListView"
+                android:layout_width="match_parent"
+                android:layout_height="180dp"
+                android:divider="#E0E0E0"
+                android:dividerHeight="1dp"
+                android:padding="8dp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+    <!-- Chat Messages Section -->
+    <androidx.cardview.widget.CardView
+        android:layout_width="match_parent"
+        android:layout_height="250dp"
+        android:layout_marginBottom="8dp"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="2dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="💬 Chat Messages"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="#212121"
+                android:padding="12dp"
+                android:background="#F5F5F5" />
+
+            <ListView
+                android:id="@+id/chatListView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:divider="#E0E0E0"
+                android:dividerHeight="1dp"
+                android:padding="8dp"
+                android:transcriptMode="alwaysScroll"
+                android:stackFromBottom="true" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+    <!-- Message Input Section -->
+    <androidx.cardview.widget.CardView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="4dp"
+        app:contentPadding="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- Priority Spinner -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Priority: "
+                    android:textSize="16sp"
+                    android:textColor="#212121"
+                    android:layout_marginEnd="8dp" />
+
+                <Spinner
+                    android:id="@+id/prioritySpinner"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:spinnerMode="dropdown"
+                    android:entries="@array/priority_options"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:minHeight="48dp" />
+
+            </LinearLayout>
+
+            <!-- Message Input -->
+            <EditText
+                android:id="@+id/messageEditText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="80dp"
+                android:hint="Type your message..."
+                android:gravity="top|start"
+                android:inputType="textMultiLine|textCapSentences"
+                android:maxLines="4"
+                android:padding="12dp"
+                android:background="@android:drawable/edit_text"
+                android:scrollbars="vertical" />
+
+            <!-- Send Button -->
+            <Button
+                android:id="@+id/sendButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Send Message"
+                android:textSize="16sp"
+                android:textAllCaps="false"
+                android:padding="12dp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
+</LinearLayout>
+
+</ScrollView>
+
+    </androidx.coordinatorlayout.widget.CoordinatorLayout>
