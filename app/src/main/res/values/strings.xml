@@ -1,7 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">dtn</string>
-    <string-array name="priority_levels">
-        <item>NORMAL</item>
-        <item>HIGH</item>
-    </string-array>
+    <string name="app_name">DTN Messenger</string>
+
+    <!-- Status Messages -->
+    <string name="status_disconnected">Status: Disconnected</string>
+    <string name="status_connected_host">Status: Connected as Host</string>
+    <string name="status_connected_client">Status: Connected as Client</string>
+    <string name="status_discovering">Status: Discovering Peers...</string>
+
+    <!-- Protocol Messages -->
+    <string name="protocol_epidemic">Protocol: Epidemic Routing</string>
+    <string name="protocol_spray_wait">Protocol: Spray and Wait</string>
+
+    <!-- Section Headers -->
+    <string name="header_peers">📱 Available Peers</string>
+    <string name="header_messages">💬 Chat Messages</string>
+
+    <!-- Empty State Messages -->
+    <string name="no_peers_found">No peers found. Start discovery...</string>
+    <string name="no_messages_yet">No messages yet. Send your first message!</string>
+
+    <!-- Button Labels -->
+    <string name="send_message">Send Message</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+
+    <!-- Menu Items -->
+    <string name="menu_epidemic_routing">Epidemic Routing</string>
+    <string name="menu_spray_and_wait">Spray and Wait</string>
+    <string name="menu_view_friends">View Friends</string>
+    <string name="menu_clear_messages">Clear Messages</string>
+    <string name="menu_about">About</string>
+
+    <!-- Toast Messages -->
+    <string name="switched_to_epidemic">Switched to Epidemic Routing</string>
+    <string name="switched_to_spray_wait">Switched to Spray and Wait</string>
+    <string name="message_sent">Message sent</string>
+    <string name="no_active_connection">No active connection</string>
+    <string name="permission_required">Permissions required</string>
+
+    <!-- Input Hints -->
+    <string name="message_hint">Type your message...</string>
+    <string name="priority_label">Priority:</string>
 </resources>
