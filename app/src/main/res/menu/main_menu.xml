@@ -1,9 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<menu xmlns:android="http://schemas.android.com/apk/res/android">
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
     <item
         android:id="@+id/menu_epidemic"
-        android:title="Use Epidemic Routing" />
+        android:title="Epidemic Routing"
+        android:icon="@android:drawable/ic_menu_share"
+        app:showAsAction="never" />
+
     <item
         android:id="@+id/menu_spray_and_wait"
-        android:title="Use Spray and Wait" />
+        android:title="Spray and Wait"
+        android:icon="@android:drawable/ic_menu_manage"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_view_friends"
+        android:title="View Friends"
+        android:icon="@android:drawable/ic_menu_my_calendar"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_clear_messages"
+        android:title="Clear Messages"
+        android:icon="@android:drawable/ic_menu_delete"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/menu_about"
+        android:title="About"
+        android:icon="@android:drawable/ic_menu_info_details"
+        app:showAsAction="never" />
+
 </menu>
