@@ -1,37 +1,43 @@
 package com.example.dtn.utils;
 
 import android.content.Context;
-import android.os.Environment;
 import android.util.Log;
 
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class Logger {
     private static Logger instance;
     private File logFile;
-    private static final String LOG_FILE_NAME = "dtn_log.txt";
-    private static final String TAG = "Logger";
+    private ExecutorService logExecutor;
+    private static final String TAG = "DTNLogger";
+
+    private static final ThreadLocal<SimpleDateFormat> dateFormat =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US));
 
     private Logger(Context context) {
+        logExecutor = Executors.newSingleThreadExecutor();
+
         try {
-            File logDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "DTNLogs");
+            File logDir = new File(context.getFilesDir(), "DTNLogs");
             if (!logDir.exists()) {
                 logDir.mkdirs();
             }
-            logFile = new File(logDir, LOG_FILE_NAME);
-            if (!logFile.exists()) {
-                logFile.createNewFile();
-            } else {
-                // Optional: Clear the log file on new app session
-                new FileWriter(logFile, false).close();
-            }
+
+            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            logFile = new File(logDir, "dtn_log_" + timestamp + ".txt");
+            logFile.createNewFile();
+
+            Log.d(TAG, "Log file created: " + logFile.getAbsolutePath());
         } catch (IOException e) {
-            Log.e("Logger", "Failed to initialize logger file", e);
+            Log.e(TAG, "Failed to initialize logger file", e);
         }
     }
 
@@ -42,14 +48,32 @@ public class Logger {
         return instance;
     }
 
-    public synchronized void logEvent(String eventDetails) {
-        try (FileWriter writer = new FileWriter(logFile, true)) {
-            String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
-            String logEntry = timestamp + " | " + eventDetails + "\n";
-            writer.append(logEntry);
-            Log.d("Logger", "Logged: " + logEntry.trim());
-        } catch (IOException e) {
-            Log.e("Logger", "Failed to write to log file", e);
+    public void logEvent(String eventDetails) {
+        if (logFile == null) {
+            Log.e(TAG, "Log file not initialized, cannot log event");
+            return;
+        }
+
+        logExecutor.execute(() -> {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true))) {
+                String timestamp = dateFormat.get().format(new Date());
+                String logEntry = timestamp + " | " + eventDetails + "\n";
+                writer.write(logEntry);
+                writer.flush();
+                Log.d(TAG, "Logged: " + logEntry.trim());
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to write to log file", e);
+            }
+        });
+    }
+
+    public String getLogFilePath() {
+        return logFile != null ? logFile.getAbsolutePath() : "Log file not initialized";
+    }
+
+    public void shutdown() {
+        if (logExecutor != null) {
+            logExecutor.shutdown();
         }
     }
 }
