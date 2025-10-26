@@ -11,6 +11,8 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
+
 
 
 //This thread runs on the device that
@@ -52,7 +54,12 @@ public class ServerThread extends Thread {
                 }
             }
         } catch (IOException e) {
-            Log.e("ServerThread", "IOException in run()", e);
+            // This exception is expected when we call close()
+            if (!"Socket closed".equals(e.getMessage())) {
+                Log.e("ServerThread", "IOException in run()", e);
+            }
+        } finally {
+            close(); // Ensure cleanup
         }
     }
 
@@ -68,5 +75,19 @@ public class ServerThread extends Thread {
                 Log.e("ServerThread", "IOException in write()", e);
             }
         }).start();
+    }
+
+    /**
+     * Closes all sockets and streams to shut down the thread safely.
+     */
+    public void close() {
+        try {
+            if (oos != null) oos.close();
+            if (ois != null) ois.close();
+            if (socket != null) socket.close();
+            if (serverSocket != null) serverSocket.close();
+        } catch (IOException e) {
+            Log.e("ServerThread", "Error closing sockets", e);
+        }
     }
 }

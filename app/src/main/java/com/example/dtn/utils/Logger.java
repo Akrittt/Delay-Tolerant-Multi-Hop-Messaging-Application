@@ -15,6 +15,7 @@ public class Logger {
     private static Logger instance;
     private File logFile;
     private static final String LOG_FILE_NAME = "dtn_log.txt";
+    private static final String TAG = "Logger";
 
     private Logger(Context context) {
         try {

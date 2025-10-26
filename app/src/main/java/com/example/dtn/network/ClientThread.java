@@ -46,7 +46,11 @@ public class ClientThread extends Thread {
                 }
             }
         } catch (IOException e) {
-            Log.e("ClientThread", "IOException in run()", e);
+            if (!"Socket closed".equals(e.getMessage())) {
+                Log.e("ClientThread", "IOException in run()", e);
+            }
+        } finally {
+            close(); // Ensure cleanup
         }
     }
 
@@ -61,5 +65,18 @@ public class ClientThread extends Thread {
                 Log.e("ClientThread", "IOException in write()", e);
             }
         }).start();
+    }
+
+    /**
+     * Closes all sockets and streams to shut down the thread safely.
+     */
+    public void close() {
+        try {
+            if (oos != null) oos.close();
+            if (ois != null) ois.close();
+            if (socket != null) socket.close();
+        } catch (IOException e) {
+            Log.e("ClientThread", "Error closing sockets", e);
+        }
     }
 }

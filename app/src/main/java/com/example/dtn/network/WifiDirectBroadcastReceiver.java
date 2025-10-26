@@ -8,8 +8,10 @@ import android.content.pm.PackageManager;
 import android.net.NetworkInfo;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pManager;
+import android.os.Build;
 import android.widget.Toast;
 
+import androidx.annotation.RequiresApi;
 import androidx.core.app.ActivityCompat;
 
 import com.example.dtn.MainActivity;
@@ -26,6 +28,7 @@ public class WifiDirectBroadcastReceiver extends BroadcastReceiver {
         this.activity = activity;
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.Q)
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
@@ -51,13 +54,13 @@ public class WifiDirectBroadcastReceiver extends BroadcastReceiver {
             }
             NetworkInfo networkInfo = intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO);
 
-            // --- THE FIX IS HERE ---
             // We must check if networkInfo is not null before using it.
             if (networkInfo != null && networkInfo.isConnected()) {
                 // We are connected with the other device, request connection info.
                 manager.requestConnectionInfo(channel, activity.connectionInfoListener);
             } else {
                 // It's a disconnect or an intermediate state.
+                activity.onDisconnect();
                 activity.statusTextView.setText("Status: Disconnected");
             }
         } else if (WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION.equals(action)) {

@@ -3,11 +3,11 @@
   <component name="deploymentTargetSelector">
     <selectionStates>
       <SelectionState runConfigName="app">
-        <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2025-10-17T21:35:32.259049900Z">
+        <option name="selectionMode" value="DIALOG" />
+        <DropdownSelection timestamp="2025-10-26T11:14:59.922120200Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="PhysicalDevice" identifier="serial=onaehu9prs5lemtw" />
+              <DeviceId pluginId="LocalEmulator" identifier="path=C:\Users\91987\.android\avd\Resizable_Experimental.avd" />
             </handle>
           </Target>
         </DropdownSelection>
@@ -15,12 +15,7 @@
           <targets>
             <Target type="DEFAULT_BOOT">
               <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=XKGQIF7LBAHMR8D6" />
-              </handle>
-            </Target>
-            <Target type="DEFAULT_BOOT">
-              <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=RZCX70145HJ" />
+                <DeviceId pluginId="PhysicalDevice" identifier="serial=ZD222NT5VF" />
               </handle>
             </Target>
             <Target type="DEFAULT_BOOT">
