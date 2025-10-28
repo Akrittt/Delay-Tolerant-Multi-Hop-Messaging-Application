@@ -10,7 +10,6 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
-import android.net.wifi.p2p.WifiP2pDeviceList;
 import android.net.wifi.p2p.WifiP2pInfo;
 import android.net.wifi.p2p.WifiP2pManager;
 import android.os.Build;
@@ -106,11 +105,15 @@ public class MainActivity extends AppCompatActivity {
 
     public static class ChatMessage {
         String text;
+        String messageId; // Track message ID for updates
         boolean isDelivered;
-        ChatMessage(String text, boolean isDelivered) {
+
+        ChatMessage(String text, String messageId, boolean isDelivered) {
             this.text = text;
+            this.messageId = messageId;
             this.isDelivered = isDelivered;
         }
+
         @NonNull
         @Override
         public String toString() {
@@ -128,7 +131,6 @@ public class MainActivity extends AppCompatActivity {
         currentProtocol = prefs.getString(KEY_ROUTING_PROTOCOL, "EPIDEMIC");
 
         initializeUI();
-        //setupToolbar();
         updateProtocolDisplay();
         setupPrioritySpinner();
         initializeWifiDirect();
@@ -137,6 +139,11 @@ public class MainActivity extends AppCompatActivity {
         initializeHandler();
         setListeners();
         requestPermissions();
+
+        // Load messages after database is initialized
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            loadMessagesFromDatabase();
+        }, 1000);
     }
 
     private void initializeUI() {
@@ -154,13 +161,6 @@ public class MainActivity extends AppCompatActivity {
 
         statusTextView.setText("Status: Disconnected");
         statusTextView.setTextColor(0xFFF44336); // Red
-    }
-
-    private void setupToolbar() {
-        setSupportActionBar(toolbar);
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().setTitle("DTN Messenger");
-        }
     }
 
     private void updateProtocolDisplay() {
@@ -218,6 +218,7 @@ public class MainActivity extends AppCompatActivity {
         handler = new Handler(Looper.getMainLooper(), msg -> {
             if (msg.what == ServerThread.MESSAGE_READ) {
                 Message receivedMessage = (Message) msg.obj;
+                Log.d(TAG, "Handler: Received message ID: " + receivedMessage.message_id);
                 handleReceivedMessage(receivedMessage);
             }
             return true;
@@ -286,60 +287,41 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "Message is empty", Toast.LENGTH_SHORT).show();
                 return;
             }
-            if (deviceArray == null || deviceArray.length == 0) {
-                Toast.makeText(this, "No destination peer available", Toast.LENGTH_SHORT).show();
-                return;
-            }
 
-            final String destinationId = deviceArray[0].deviceAddress;
-            final Message message = new Message();
-
-            runOnUiThread(() -> {
-                String displayText = String.format(Locale.US, "Me (%s): %s",
-                        message.message_id.substring(0, 8), msgText);
-                ChatMessage chatMessage = new ChatMessage(displayText, false);
-                chatMessages.add(chatMessage);
-                chatAdapter.notifyDataSetChanged();
-                messageEditText.setText("");
-            });
-
+            // NEW: Let user select destination from friends list
             executor.execute(() -> {
-                try {
-                    message.source_id = ownDeviceId;
-                    message.destination_id = destinationId;
-                    message.encrypted_payload = CryptoUtils.encrypt(msgText);
-                    message.checksum = CryptoUtils.generateChecksum(message.encrypted_payload);
-                    message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
-                    message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000);
-                    message.hop_count = 0;
-                    message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ?
-                            SprayAndWaitRouting.INITIAL_COPIES : 1;
+                List<Friend> friends = friendDao.getAllFriends();
 
-                    messageDao.insert(message);
-
-                    // Send via whichever thread is active
-                    boolean sent = false;
-                    if (serverThread != null && serverThread.isAlive()) {
-                        serverThread.write(message);
-                        sent = true;
-                    } else if (clientThread != null && clientThread.isAlive()) {
-                        clientThread.write(message);
-                        sent = true;
+                runOnUiThread(() -> {
+                    if (friends.isEmpty()) {
+                        Toast.makeText(this, "Add friends first (long-press on peer)", Toast.LENGTH_LONG).show();
+                        return;
                     }
 
-                    if (!sent) {
-                        runOnUiThread(() ->
-                                Toast.makeText(this, "No active connection", Toast.LENGTH_SHORT).show()
-                        );
+                    // Create friend selection dialog
+                    String[] friendNames = new String[friends.size()];
+                    String[] friendIds = new String[friends.size()];
+
+                    for (int i = 0; i < friends.size(); i++) {
+                        friendNames[i] = friends.get(i).friendlyName;
+                        friendIds[i] = friends.get(i).deviceId;
                     }
-                } catch (Exception e) {
-                    Log.e(TAG, "Error sending message", e);
-                    runOnUiThread(() ->
-                            Toast.makeText(this, "Failed to send message", Toast.LENGTH_SHORT).show()
-                    );
-                }
+
+                    new AlertDialog.Builder(this)
+                            .setTitle("Send Message To:")
+                            .setItems(friendNames, (dialog, which) -> {
+                                String selectedFriendId = friendIds[which];
+                                String selectedFriendName = friendNames[which];
+
+                                // Send message to selected friend (even if offline)
+                                sendMessageToDestination(msgText, selectedFriendId, selectedFriendName);
+                            })
+                            .setNegativeButton("Cancel", null)
+                            .show();
+                });
             });
         });
+
     }
 
     private String getConnectionFailureReason(int reason) {
@@ -551,20 +533,51 @@ public class MainActivity extends AppCompatActivity {
 
     private void processDataMessage(Message message) throws Exception {
         Message existing = messageDao.getMessageById(message.message_id);
-        if (existing != null) return;
-
-        messageDao.insert(message);
-
-        if (ownDeviceId.equals(message.destination_id)) {
-            String decryptedText = CryptoUtils.decrypt(message.encrypted_payload);
-            runOnUiThread(() -> {
-                chatMessages.add(new ChatMessage(message.source_id + ": " + decryptedText, true));
-                chatAdapter.notifyDataSetChanged();
-            });
-            logger.logEvent("EVENT=MESSAGE_DELIVERED | MSG_ID=" + message.message_id);
-            generateAndSendAck(message);
+        if (existing != null) {
+            Log.d(TAG, "Duplicate message received, ignoring");
+            return;
         }
 
+        // Always store the message (for forwarding)
+        messageDao.insert(message);
+        Log.d(TAG, "Message stored in database: " + message.message_id);
+
+        // Log destination check
+        Log.d(TAG, "ownDeviceId: " + ownDeviceId);
+        Log.d(TAG, "message.destination_id: " + message.destination_id);
+        Log.d(TAG, "message.source_id: " + message.source_id);
+
+        // ONLY show in UI if message is FOR ME
+        if (ownDeviceId.equals(message.destination_id)) {
+            String decryptedText = CryptoUtils.decrypt(message.encrypted_payload);
+            Log.d(TAG, "✓ Message is for me! Decrypted: " + decryptedText);
+
+            // Show in UI
+            runOnUiThread(() -> {
+                String displayText = "From Peer: " + decryptedText;
+                Log.d(TAG, "Adding received message to UI: " + displayText);
+
+                ChatMessage chatMessage = new ChatMessage(displayText, message.message_id, true);
+                chatMessages.add(chatMessage);
+                chatAdapter.notifyDataSetChanged();
+                chatListView.smoothScrollToPosition(chatMessages.size() - 1);
+
+                Log.d(TAG, "Message displayed in UI, total messages: " + chatMessages.size());
+                Toast.makeText(this, "📩 New message received!", Toast.LENGTH_SHORT).show();
+            });
+
+            logger.logEvent("EVENT=MESSAGE_DELIVERED | MSG_ID=" + message.message_id);
+
+            // Generate ACK back to sender
+            generateAndSendAck(message);
+        } else {
+            // Message is NOT for me - just forward it
+            Log.d(TAG, "Message not for me (dest: " + message.destination_id + "), will forward to correct destination");
+            logger.logEvent("EVENT=MESSAGE_FORWARDED_TRANSIT | MSG_ID=" + message.message_id +
+                    " | DEST=" + message.destination_id);
+        }
+
+        // Trigger forwarding logic for ALL messages (whether for me or not)
         WifiP2pDevice connectedPeer = findConnectedPeer();
         if (connectedPeer != null) {
             triggerForwardingLogic(connectedPeer);
@@ -585,16 +598,22 @@ public class MainActivity extends AppCompatActivity {
 
         messageDao.insert(ackMessage);
         logger.logEvent("EVENT=ACK_GENERATED | FOR_MSG_ID=" + originalMessage.message_id);
+        Log.d(TAG, "ACK generated for message: " + originalMessage.message_id);
 
         if (serverThread != null && serverThread.isAlive()) {
             serverThread.write(ackMessage);
+            Log.d(TAG, "ACK sent via ServerThread");
         } else if (clientThread != null && clientThread.isAlive()) {
             clientThread.write(ackMessage);
+            Log.d(TAG, "ACK sent via ClientThread");
         }
     }
 
     private void processAck(Message ackMessage) throws Exception {
+        Log.d(TAG, "Processing ACK message");
+
         if (!ownDeviceId.equals(ackMessage.destination_id)) {
+            // Forward ACK if not for us
             Message existing = messageDao.getMessageById(ackMessage.message_id);
             if (existing == null) {
                 messageDao.insert(ackMessage);
@@ -607,23 +626,29 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        // ACK is for us
         String originalMessageId = CryptoUtils.decrypt(ackMessage.encrypted_payload);
+        Log.d(TAG, "ACK received for original message: " + originalMessageId);
+
         Message messageToUpdate = messageDao.getMessageById(originalMessageId);
 
         if (messageToUpdate != null && !messageToUpdate.is_delivered) {
             messageToUpdate.is_delivered = true;
             messageDao.update(messageToUpdate);
             logger.logEvent("EVENT=MESSAGE_DELIVERED_ACK_RECEIVED | MSG_ID=" + originalMessageId);
+            Log.d(TAG, "Message marked as delivered in database");
 
+            // Update UI
             runOnUiThread(() -> {
                 for (ChatMessage cm : chatMessages) {
-                    if (cm.text.contains(originalMessageId.substring(0, 8))) {
+                    if (cm.messageId.equals(originalMessageId)) {
                         cm.isDelivered = true;
+                        chatAdapter.notifyDataSetChanged();
+                        Toast.makeText(this, "✓ Message Delivered!", Toast.LENGTH_SHORT).show();
+                        Log.d(TAG, "UI updated - message marked as delivered");
                         break;
                     }
                 }
-                chatAdapter.notifyDataSetChanged();
-                Toast.makeText(this, "✓ Delivery Confirmed!", Toast.LENGTH_SHORT).show();
             });
         }
     }
@@ -725,21 +750,18 @@ public class MainActivity extends AppCompatActivity {
             registerReceiver(receiver, intentFilter);
             isReceiverRegistered = true;
             Log.d(TAG, "Receiver registered");
+
+            discoverPeers();
+
         }
+        // Reload messages when app comes back to foreground
+        loadMessagesFromDatabase();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        if (receiver != null && isReceiverRegistered) {
-            try {
-                unregisterReceiver(receiver);
-                isReceiverRegistered = false;
-                Log.d(TAG, "Receiver unregistered");
-            } catch (IllegalArgumentException e) {
-                Log.e(TAG, "Receiver not registered", e);
-            }
-        }
+        Log.d(TAG, "onPause - keeping receiver registered");
     }
 
     @Override
@@ -846,6 +868,7 @@ public class MainActivity extends AppCompatActivity {
             try {
                 unregisterReceiver(receiver);
                 isReceiverRegistered = false;
+                Log.d(TAG, "Receiver unregistered in onDestroy");
             } catch (IllegalArgumentException e) {
                 Log.e(TAG, "Receiver not registered", e);
             }
@@ -870,4 +893,120 @@ public class MainActivity extends AppCompatActivity {
             channel.close();
         }
     }
+
+    private void loadMessagesFromDatabase() {
+        executor.execute(() -> {
+            try {
+                // Get all non-expired messages from database
+                List<Message> allMessages = messageDao.getNonExpiredMessages(System.currentTimeMillis());
+                Log.d(TAG, "Found " + allMessages.size() + " messages in database");
+
+                runOnUiThread(() -> {
+                    chatMessages.clear();
+
+                    for (Message msg : allMessages) {
+                        // ONLY show messages that are:
+                        // 1. Sent BY me (source = ownDeviceId)
+                        // 2. Sent TO me (destination = ownDeviceId)
+
+                        boolean isFromMe = msg.source_id.equals(ownDeviceId);
+                        boolean isForMe = msg.destination_id.equals(ownDeviceId);
+
+                        // Skip transit messages (messages I'm just forwarding)
+                        if (!isFromMe && !isForMe) {
+                            Log.d(TAG, "Skipping transit message: " + msg.message_id);
+                            continue;
+                        }
+
+                        try {
+                            // Decrypt message
+                            String decryptedText = CryptoUtils.decrypt(msg.encrypted_payload);
+
+                            // Format display text
+                            String displayText;
+                            if (isFromMe) {
+                                // Message sent by me
+                                displayText = "Me: " + decryptedText;
+                            } else {
+                                // Message received by me
+                                displayText = "Peer: " + decryptedText;
+                            }
+
+                            ChatMessage chatMessage = new ChatMessage(
+                                    displayText,
+                                    msg.message_id,
+                                    msg.is_delivered
+                            );
+                            chatMessages.add(chatMessage);
+
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error decrypting message: " + msg.message_id, e);
+                        }
+                    }
+
+                    chatAdapter.notifyDataSetChanged();
+                    if (!chatMessages.isEmpty()) {
+                        chatListView.smoothScrollToPosition(chatMessages.size() - 1);
+                    }
+
+                    Log.d(TAG, "✓ Loaded " + chatMessages.size() + " messages for this device");
+                    if (chatMessages.size() > 0) {
+                        Toast.makeText(this, "Loaded " + chatMessages.size() + " messages",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+
+            } catch (Exception e) {
+                Log.e(TAG, "Error loading messages from database", e);
+            }
+        });
+    }
+
+
+    private void sendMessageToDestination(String msgText, String destId, String destName) {
+        final Message message = new Message();
+
+        String displayText = String.format(Locale.US, "To %s: %s", destName, msgText);
+        Log.d(TAG, "Adding message to UI: " + displayText);
+
+        ChatMessage chatMessage = new ChatMessage(displayText, message.message_id, false);
+        chatMessages.add(chatMessage);
+        chatAdapter.notifyDataSetChanged();
+        chatListView.smoothScrollToPosition(chatMessages.size() - 1);
+        messageEditText.setText("");
+
+        executor.execute(() -> {
+            try {
+                message.source_id = ownDeviceId;
+                message.destination_id = destId;  // Can be offline device!
+                message.encrypted_payload = CryptoUtils.encrypt(msgText);
+                message.checksum = CryptoUtils.generateChecksum(message.encrypted_payload);
+                message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
+                message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000);
+                message.hop_count = 0;
+                message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ?
+                        SprayAndWaitRouting.INITIAL_COPIES : 1;
+
+                messageDao.insert(message);
+                Log.d(TAG, "Message stored for offline delivery to: " + destName);
+
+                // Try to send now if connected to someone
+                if (serverThread != null && serverThread.isAlive()) {
+                    serverThread.write(message);
+                    Log.d(TAG, "Message forwarded immediately via ServerThread");
+                } else if (clientThread != null && clientThread.isAlive()) {
+                    clientThread.write(message);
+                    Log.d(TAG, "Message forwarded immediately via ClientThread");
+                } else {
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, "📦 Message queued for delivery when peer is in range",
+                                Toast.LENGTH_LONG).show();
+                    });
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending message", e);
+            }
+        });
+    }
+
 }

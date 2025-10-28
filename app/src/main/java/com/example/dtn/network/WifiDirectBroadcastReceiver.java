@@ -1,5 +1,7 @@
 package com.example.dtn.network;
 
+import static android.content.ContentValues.TAG;
+
 import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -33,93 +35,102 @@ public class WifiDirectBroadcastReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
-
-        if (action == null) {
-            return; // Safety check for null action
-        }
+        Log.d(TAG, "=== Broadcast received: " + action + " ===");
 
         if (WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION.equals(action)) {
-            // Check if Wi-Fi P2P is enabled
             int state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1);
             if (state == WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
-                Toast.makeText(context, "Wi-Fi P2P is ON", Toast.LENGTH_SHORT).show();
+                Log.d(TAG, "✓ Wi-Fi P2P is enabled");
             } else {
-                Toast.makeText(context, "Wi-Fi P2P is OFF", Toast.LENGTH_SHORT).show();
+                Log.e(TAG, "✗ Wi-Fi P2P is disabled");
+                activity.statusTextView.setText("Status: Wi-Fi Direct Disabled");
             }
+        }
+        else if (WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION.equals(action)) {
+            Log.d(TAG, "Peer list changed - requesting peer list");
 
-        } else if (WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION.equals(action)) {
-            // Request available peer list
-            if (manager == null || channel == null) {
-                Log.e("WifiDirectBroadcast", "Manager or channel is null");
-                return;
-            }
-
-            // Check permissions based on Android version
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // Android 13+ (API 33+) - Check NEARBY_WIFI_DEVICES
-                if (ActivityCompat.checkSelfPermission(activity,
-                        Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-                    Log.e("WifiDirectBroadcast", "Missing NEARBY_WIFI_DEVICES permission");
-                    Toast.makeText(context, "Missing Wi-Fi permission", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-            } else {
-                // Android 12 and below - Check ACCESS_FINE_LOCATION
-                if (ActivityCompat.checkSelfPermission(activity,
-                        Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                    Log.e("WifiDirectBroadcast", "Missing ACCESS_FINE_LOCATION permission");
-                    Toast.makeText(context, "Missing location permission", Toast.LENGTH_SHORT).show();
-                    return;
+            if (manager != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    if (ActivityCompat.checkSelfPermission(context,
+                            Manifest.permission.NEARBY_WIFI_DEVICES)
+                            == PackageManager.PERMISSION_GRANTED) {
+                        manager.requestPeers(channel, activity.peerListListener);
+                    } else {
+                        Log.e(TAG, "Missing NEARBY_WIFI_DEVICES permission");
+                    }
+                } else {
+                    if (ActivityCompat.checkSelfPermission(context,
+                            Manifest.permission.ACCESS_FINE_LOCATION)
+                            == PackageManager.PERMISSION_GRANTED) {
+                        manager.requestPeers(channel, activity.peerListListener);
+                    } else {
+                        Log.e(TAG, "Missing LOCATION permission");
+                    }
                 }
             }
+        }
+        else if (WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION.equals(action)) {
+            Log.d(TAG, "=== CONNECTION_CHANGED_ACTION received ===");
 
-            manager.requestPeers(channel, activity.peerListListener);
-
-        } else if (WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION.equals(action)) {
-            // Handle connection state changes
-            if (manager == null || channel == null) {
-                Log.e("WifiDirectBroadcast", "Manager or channel is null");
+            if (manager == null) {
+                Log.e(TAG, "Manager is null in CONNECTION_CHANGED");
                 return;
             }
 
             NetworkInfo networkInfo = intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO);
+            if (networkInfo != null) {
+                Log.d(TAG, "NetworkInfo state: " + networkInfo.getState());
+                Log.d(TAG, "NetworkInfo isConnected: " + networkInfo.isConnected());
+                Log.d(TAG, "NetworkInfo detailed state: " + networkInfo.getDetailedState());
 
-            if (networkInfo != null && networkInfo.isConnected()) {
-                // We are connected - request connection details
-                Log.d("WifiDirectBroadcast", "Connected to peer");
+                if (networkInfo.isConnected()) {
+                    Log.d(TAG, "✓ Wi-Fi Direct connection established! Requesting connection info...");
 
-                // Check permissions before requesting connection info
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    if (ActivityCompat.checkSelfPermission(activity,
-                            Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-                        Log.e("WifiDirectBroadcast", "Missing NEARBY_WIFI_DEVICES permission for connection info");
-                        return;
+                    // Check permissions
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (ActivityCompat.checkSelfPermission(context,
+                                Manifest.permission.NEARBY_WIFI_DEVICES)
+                                != PackageManager.PERMISSION_GRANTED) {
+                            Log.e(TAG, "Missing NEARBY_WIFI_DEVICES permission");
+                            return;
+                        }
+                    } else {
+                        if (ActivityCompat.checkSelfPermission(context,
+                                Manifest.permission.ACCESS_FINE_LOCATION)
+                                != PackageManager.PERMISSION_GRANTED) {
+                            Log.e(TAG, "Missing LOCATION permission");
+                            return;
+                        }
                     }
+
+                    manager.requestConnectionInfo(channel, activity.connectionInfoListener);
+
                 } else {
-                    if (ActivityCompat.checkSelfPermission(activity,
-                            Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                        Log.e("WifiDirectBroadcast", "Missing ACCESS_FINE_LOCATION permission for connection info");
-                        return;
-                    }
+                    Log.d(TAG, "✗ Wi-Fi Direct disconnected");
+                    activity.onDisconnect();
                 }
-
-                manager.requestConnectionInfo(channel, activity.connectionInfoListener);
             } else {
-                // Disconnected or intermediate state
-                Log.d("WifiDirectBroadcast", "Disconnected from peer");
-                activity.onDisconnect();
-                activity.statusTextView.setText("Status: Disconnected");
+                Log.w(TAG, "NetworkInfo is null in CONNECTION_CHANGED");
+            }
+        }
+        else if (WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION.equals(action)) {
+            Log.d(TAG, "This device info changed");
+
+            WifiP2pDevice device = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                device = intent.getParcelableExtra(
+                        WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice.class);
+            } else {
+                device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE);
             }
 
-        } else if (WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION.equals(action)) {
-            // Update device information
-            WifiP2pDevice device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE);
             if (device != null) {
+                Log.d(TAG, "Device name: " + device.deviceName);
+                Log.d(TAG, "Device address: " + device.deviceAddress);
+                Log.d(TAG, "Device status: " + device.status);
                 activity.setOwnDeviceName(device.deviceName);
-                Log.d("WifiDirectBroadcast", "Device name: " + device.deviceName);
-            } else {
-                Log.w("WifiDirectBroadcast", "Device info is null");
             }
         }
     }
+
 }
