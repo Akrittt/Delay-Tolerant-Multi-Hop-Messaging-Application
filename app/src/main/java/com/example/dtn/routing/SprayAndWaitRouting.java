@@ -18,25 +18,26 @@ import java.util.concurrent.Executors;
 public class SprayAndWaitRouting implements RoutingProtocol {
 
     private static final String TAG = "SprayAndWaitRouting";
+    private static final int INITIAL_COPIES = 8;
+    private static final int MAX_HOPS = 15; // FIXED: Prevent infinite loops
+
     private final Logger logger;
     private final String ownDeviceId;
     private final MessageDao messageDao;
     private final ExecutorService dbExecutor;
-    public static final int INITIAL_COPIES = 8;
 
     public SprayAndWaitRouting(Context context, String ownDeviceId, MessageDao messageDao) {
         this.logger = Logger.getInstance(context);
         this.ownDeviceId = ownDeviceId;
         this.messageDao = messageDao;
-        this.dbExecutor = Executors.newSingleThreadExecutor(); // Single thread for sequential DB operations
+        this.dbExecutor = Executors.newSingleThreadExecutor();
     }
 
     @Override
     public void forwardMessages(List<Message> messagesToForward, WifiP2pDevice peer,
                                 ServerThread serverThread, ClientThread clientThread) {
 
-        // Validate inputs
-        if (peer == null || peer.deviceName == null) {
+        if (peer == null || (peer.deviceName == null && peer.deviceAddress == null)) {
             Log.e(TAG, "Invalid peer device");
             return;
         }
@@ -46,30 +47,35 @@ public class SprayAndWaitRouting implements RoutingProtocol {
             return;
         }
 
+        String peerId = peer.deviceAddress != null ? peer.deviceAddress : peer.deviceName;
+
         for (Message message : messagesToForward) {
-            // Skip if message is from this peer (avoid forwarding back to sender)
-            if (message.source_id != null && message.source_id.equals(peer.deviceName)) {
+            // FIXED: Use consistent device identifier
+            if (message.source_id != null && message.source_id.equals(peerId)) {
                 Log.d(TAG, "Skipping message from sender: " + message.message_id);
                 continue;
             }
 
+            // FIXED: Check hop count limit
+            if (message.hop_count >= MAX_HOPS) {
+                Log.d(TAG, "Message reached max hops: " + message.message_id);
+                continue;
+            }
+
             if (message.copy_count > 1) {
-                // SPRAY PHASE: Split copies using binary splitting
-                handleSprayPhase(message, peer, serverThread, clientThread);
+                handleSprayPhase(message, peer, peerId, serverThread, clientThread);
             } else if (message.copy_count == 1) {
-                // WAIT PHASE: Only forward to final destination
-                handleWaitPhase(message, peer, serverThread, clientThread);
+                handleWaitPhase(message, peer, peerId, serverThread, clientThread);
             } else {
-                // Invalid copy count (0 or negative)
                 Log.w(TAG, "Invalid copy_count for message: " + message.message_id);
             }
         }
     }
 
     /**
-     * SPRAY PHASE: Binary split message copies between this node and peer
+     * FIXED: Spray phase with synchronized copy count update
      */
-    private void handleSprayPhase(Message message, WifiP2pDevice peer,
+    private void handleSprayPhase(Message message, WifiP2pDevice peer, String peerId,
                                   ServerThread serverThread, ClientThread clientThread) {
         int copiesToGive = message.copy_count / 2;
         int copiesToKeep = message.copy_count - copiesToGive;
@@ -77,63 +83,72 @@ public class SprayAndWaitRouting implements RoutingProtocol {
         Log.d(TAG, String.format(Locale.US, "SPRAY: Message %s - Keeping %d, Sending %d copies",
                 message.message_id, copiesToKeep, copiesToGive));
 
-        // Update local database copy count asynchronously
+        // FIXED: Update in-memory copy count immediately
+        message.copy_count = copiesToKeep;
+
+        // FIXED: Then update database asynchronously
         final String messageId = message.message_id;
+        final int finalCopiesToKeep = copiesToKeep;
         dbExecutor.execute(() -> {
             try {
-                Message localMessage = messageDao.getMessageById(messageId);
-                if (localMessage != null) {
-                    localMessage.copy_count = copiesToKeep;
-                    messageDao.update(localMessage);
-                    Log.d(TAG, "Updated local copy_count to " + copiesToKeep);
+                Message dbMessage = messageDao.getMessageById(messageId);
+                if (dbMessage != null) {
+                    dbMessage.copy_count = finalCopiesToKeep;
+                    messageDao.update(dbMessage);
+                    Log.d(TAG, "Updated database copy_count to " + finalCopiesToKeep);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Database update failed for message: " + messageId, e);
             }
         });
 
-        // Create a new message instance to send (don't modify the original)
+        // Send copy to peer
         Message messageToSend = copyMessage(message);
         messageToSend.copy_count = copiesToGive;
 
-        sendMessage(messageToSend, peer, serverThread, clientThread);
+        sendMessage(messageToSend, peer, peerId, serverThread, clientThread);
     }
 
     /**
-     * WAIT PHASE: Only forward if peer is the final destination
+     * FIXED: Wait phase - only forward to destination
      */
-    private void handleWaitPhase(Message message, WifiP2pDevice peer,
+    private void handleWaitPhase(Message message, WifiP2pDevice peer, String peerId,
                                  ServerThread serverThread, ClientThread clientThread) {
-        if (peer.deviceName.equals(message.destination_id)) {
+        if (peerId.equals(message.destination_id) ||
+                (peer.deviceName != null && peer.deviceName.equals(message.destination_id))) {
+
             Log.d(TAG, String.format(Locale.US, "WAIT: Forwarding message %s to destination %s",
-                    message.message_id, peer.deviceName));
-            sendMessage(message, peer, serverThread, clientThread);
+                    message.message_id, peerId));
+            sendMessage(message, peer, peerId, serverThread, clientThread);
         } else {
             Log.d(TAG, String.format(Locale.US, "WAIT: Holding message %s (destination: %s, peer: %s)",
-                    message.message_id, message.destination_id, peer.deviceName));
+                    message.message_id, message.destination_id, peerId));
         }
     }
 
     /**
-     * Send message via the active connection (server OR client thread, not both)
+     * FIXED: Send message with hop count check
      */
-    private void sendMessage(Message message, WifiP2pDevice peer,
+    private void sendMessage(Message message, WifiP2pDevice peer, String peerId,
                              ServerThread serverThread, ClientThread clientThread) {
-        // Increment hop count
         message.hop_count++;
 
-        // Log forwarding event
+        // FIXED: Check hop limit before sending
+        if (message.hop_count > 15) {
+            Log.w(TAG, "Message exceeded hop limit, not sending: " + message.message_id);
+            return;
+        }
+
         logger.logEvent(String.format(Locale.US,
                 "EVENT=MESSAGE_FORWARDED | PROTOCOL=SPRAY_AND_WAIT | MSG_ID=%s | FROM=%s | TO=%s | COPIES=%d | HOPS=%d",
-                message.message_id, ownDeviceId, peer.deviceName, message.copy_count, message.hop_count));
+                message.message_id, ownDeviceId, peerId, message.copy_count, message.hop_count));
 
-        // Send via whichever thread is active (NOT both)
         boolean sent = false;
-        if (serverThread != null && serverThread.isAlive()) {
+        if (serverThread != null && serverThread.isConnected()) {
             serverThread.write(message);
             sent = true;
             Log.d(TAG, "Sent via ServerThread");
-        } else if (clientThread != null && clientThread.isAlive()) {
+        } else if (clientThread != null && clientThread.isConnected()) {
             clientThread.write(message);
             sent = true;
             Log.d(TAG, "Sent via ClientThread");
@@ -147,7 +162,7 @@ public class SprayAndWaitRouting implements RoutingProtocol {
     }
 
     /**
-     * Deep copy a Message object to avoid modifying the original
+     * Deep copy a Message
      */
     private Message copyMessage(Message original) {
         Message copy = new Message();
@@ -165,14 +180,10 @@ public class SprayAndWaitRouting implements RoutingProtocol {
         return copy;
     }
 
-    /**
-     * Shutdown the database executor when no longer needed
-     * Call this from MainActivity.onDestroy()
-     */
     public void shutdown() {
         if (dbExecutor != null && !dbExecutor.isShutdown()) {
             dbExecutor.shutdown();
-            Log.d(TAG, "Database executor shutdown");
+            Log.d(TAG, "Executor shutdown");
         }
     }
 }

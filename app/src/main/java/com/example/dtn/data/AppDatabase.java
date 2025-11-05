@@ -44,12 +44,12 @@ public abstract class AppDatabase extends RoomDatabase {
                         AppDatabase.class,
                         DATABASE_NAME)
                 .fallbackToDestructiveMigration() // For testing/development - see warning below
-                .addCallback(roomCallback) // Optional: Add database creation/open callbacks
+                .addCallback(roomCallback) //  Add database creation/open callbacks
                 .build();
     }
 
     /**
-     * Optional: Database callback for initialization or cleanup
+     * Database callback for initialization or cleanup
      * Useful for logging database events during testing
      */
     private static final RoomDatabase.Callback roomCallback = new RoomDatabase.Callback() {

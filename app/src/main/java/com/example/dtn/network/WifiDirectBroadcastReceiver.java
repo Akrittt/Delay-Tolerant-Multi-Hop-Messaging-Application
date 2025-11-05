@@ -2,10 +2,13 @@ package com.example.dtn.network;
 
 import static android.content.ContentValues.TAG;
 
+import static com.example.dtn.MainActivity.PREFS_NAME;
+
 import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.NetworkInfo;
 import android.net.wifi.p2p.WifiP2pDevice;
@@ -124,11 +127,16 @@ public class WifiDirectBroadcastReceiver extends BroadcastReceiver {
                 device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE);
             }
 
-            if (device != null) {
-                Log.d(TAG, "Device name: " + device.deviceName);
-                Log.d(TAG, "Device address: " + device.deviceAddress);
+            if (device != null && device.deviceName != null ) {
+                activity.ownDeviceId = device.deviceName;
+                Log.d(TAG, "This device MAC: " + device.deviceName);
+
+                SharedPreferences prefs = activity.getSharedPreferences(PREFS_NAME, 0);
+                prefs.edit().putString("ACTUAL_DEVICE_MAC", activity.ownDeviceId).apply();
+
+                Log.d(TAG, "Device address: " + device.deviceName);
                 Log.d(TAG, "Device status: " + device.status);
-                activity.setOwnDeviceName(device.deviceName);
+//
             }
         }
     }

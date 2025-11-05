@@ -11,34 +11,37 @@ import java.io.ObjectOutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
-import java.net.SocketTimeoutException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
- * This thread runs on the device that acts as the "group owner" in a Wi-Fi Direct group.
- * It waits for a client to connect and handles message transmission.
+ * FIXED: ServerThread with message queue for ordered delivery
  */
 public class ServerThread extends Thread {
     private static final String TAG = "ServerThread";
-    private static final int SOCKET_TIMEOUT = 30000; // 30 seconds timeout
+    private static final int SOCKET_TIMEOUT = 30000; // 30 seconds (reduced)
 
     private ServerSocket serverSocket;
     private Socket socket;
     private Handler handler;
     private ObjectOutputStream oos;
     private ObjectInputStream ois;
-    private final Object writeLock = new Object();
+    private final BlockingQueue<Message> writeQueue = new LinkedBlockingQueue<>();
     private volatile boolean isConnected = false;
     private volatile boolean isRunning = true;
 
-    public static final int MESSAGE_READ = 1; // A code to identify received messages
+    public static final int MESSAGE_READ = 1;
+
+    private Thread writeThread;
+    private Thread readThread;
+    private long lastActivityTime;
 
     public ServerThread(Handler handler) {
         this.handler = handler;
+        this.lastActivityTime = System.currentTimeMillis();
     }
 
-    /**
-     * Check if socket connection is established and active
-     */
     public boolean isConnected() {
         return isConnected && socket != null && !socket.isClosed();
     }
@@ -46,134 +49,114 @@ public class ServerThread extends Thread {
     @Override
     public void run() {
         try {
-            // Create server socket with port reuse enabled
             serverSocket = new ServerSocket(8888);
             serverSocket.setReuseAddress(true);
-            serverSocket.setSoTimeout(SOCKET_TIMEOUT); // Set accept timeout
-            Log.d(TAG, "Server started on port 8888, waiting for client...");
+            serverSocket.setSoTimeout(0);  // No timeout
+            Log.d(TAG, "Server socket timeout set to: no timeout");
+            Log.d(TAG, "Server listening on port 8888");
 
-            // Wait for client connection (blocks with timeout)
             socket = serverSocket.accept();
             Log.d(TAG, "Client connected from: " + socket.getInetAddress().getHostAddress());
 
-            // Initialize streams in correct order with flush
+            // FIXED: Initialize streams properly
             oos = new ObjectOutputStream(socket.getOutputStream());
-            oos.flush(); // CRITICAL: Force header write before creating input stream
+            oos.flush();
             ois = new ObjectInputStream(socket.getInputStream());
 
             isConnected = true;
-            Log.d(TAG, "Connection established and streams ready");
+            lastActivityTime = System.currentTimeMillis();
 
-            // Loop to continuously listen for incoming messages
-            while (isRunning && socket != null && !socket.isClosed()) {
-                try {
-                    Message receivedMessage = (Message) ois.readObject();
-                    if (receivedMessage != null) {
-                        Log.d(TAG, "Received message: " + receivedMessage.message_id);
-                        // Send the received message to MainActivity UI thread
-                        handler.obtainMessage(MESSAGE_READ, receivedMessage).sendToTarget();
-                    }
-                } catch (ClassNotFoundException e) {
-                    Log.e(TAG, "ClassNotFoundException - Message class not found", e);
-                } catch (SocketException e) {
-                    if (isRunning) {
-                        Log.e(TAG, "Socket closed unexpectedly", e);
-                    } else {
-                        Log.d(TAG, "Socket closed normally");
-                    }
-                    break;
-                }
-            }
-        } catch (SocketTimeoutException e) {
-            Log.e(TAG, "Socket accept timeout - no client connected", e);
-        } catch (IOException e) {
-            // Only log if not an expected closure
-            if (isRunning && !"Socket closed".equals(e.getMessage())) {
-                Log.e(TAG, "IOException in run()", e);
-            } else {
-                Log.d(TAG, "Server thread stopped normally");
+            // FIXED: Spawn separate reader/writer threads
+            readThread = new Thread(this::readLoop);
+            writeThread = new Thread(this::writeLoop);
+
+            readThread.start();
+            writeThread.start();
+
+            readThread.join();
+            writeThread.join();
+
+        } catch (IOException | InterruptedException e) {
+            if (isRunning) {
+                Log.e(TAG, "Error", e);
             }
         } finally {
             isConnected = false;
             isRunning = false;
-            close(); // Ensure cleanup
+            close();
         }
     }
 
-    /**
-     * Write a message to the connected client in a thread-safe manner
-     */
+    private void readLoop() {
+        while (isRunning && !socket.isClosed()) {
+            try {
+                Message receivedMessage = (Message) ois.readObject();
+                if (receivedMessage != null) {
+                    lastActivityTime = System.currentTimeMillis();
+                    Log.d(TAG, "Received: " + receivedMessage.message_id);
+                    handler.obtainMessage(MESSAGE_READ, receivedMessage).sendToTarget();
+                }
+            } catch (SocketException e) {
+                if (isRunning) Log.e(TAG, "Socket error", e);
+                break;
+            } catch (ClassNotFoundException | IOException e) {
+                if (isRunning) Log.e(TAG, "Read error", e);
+                break;
+            }
+        }
+    }
+
+    private void writeLoop() {
+        while (isRunning && !socket.isClosed()) {
+            try {
+                Message message = writeQueue.poll(5, TimeUnit.SECONDS);
+                if (message != null) {
+                    synchronized (oos) {
+                        oos.writeObject(message);
+                        oos.flush();
+                        oos.reset();
+                    }
+                    lastActivityTime = System.currentTimeMillis();
+                    Log.d(TAG, "Sent: " + message.message_id);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (IOException e) {
+                Log.e(TAG, "Write error", e);
+                isConnected = false;
+                break;
+            }
+        }
+    }
+
     public void write(Message message) {
         if (!isConnected()) {
-            Log.w(TAG, "Cannot write - not connected");
+            Log.w(TAG, "Not connected");
             return;
         }
 
-        // Use a single-use thread to avoid blocking the caller
-        new Thread(() -> {
-            synchronized(writeLock) { // Synchronize to prevent concurrent writes
-                try {
-                    if (oos != null && isConnected) {
-                        oos.writeObject(message);
-                        oos.flush();
-                        oos.reset(); // Prevent memory leaks from object caching
-                        Log.d(TAG, "Sent message: " + message.message_id);
-                    } else {
-                        Log.w(TAG, "Output stream not available");
-                    }
-                } catch (IOException e) {
-                    Log.e(TAG, "IOException while writing message: " + message.message_id, e);
-                    isConnected = false;
-                }
-            }
-        }).start();
+        try {
+            writeQueue.offer(message, 5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Log.e(TAG, "Queue interrupted", e);
+            Thread.currentThread().interrupt();
+        }
     }
 
-    /**
-     * Closes all sockets and streams to shut down the thread safely
-     */
     public void close() {
         isRunning = false;
         isConnected = false;
 
-        Log.d(TAG, "Closing ServerThread");
-
         try {
-            if (ois != null) {
-                ois.close();
-                ois = null;
-            }
+            if (ois != null) ois.close();
+            if (oos != null) oos.close();
+            if (socket != null && !socket.isClosed()) socket.close();
+            if (serverSocket != null && !serverSocket.isClosed()) serverSocket.close();
         } catch (IOException e) {
-            Log.e(TAG, "Error closing input stream", e);
+            Log.e(TAG, "Close error", e);
         }
 
-        try {
-            if (oos != null) {
-                oos.close();
-                oos = null;
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "Error closing output stream", e);
-        }
-
-        try {
-            if (socket != null && !socket.isClosed()) {
-                socket.close();
-                socket = null;
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "Error closing socket", e);
-        }
-
-        try {
-            if (serverSocket != null && !serverSocket.isClosed()) {
-                serverSocket.close();
-                serverSocket = null;
-            }
-        } catch (IOException e) {
-            Log.e(TAG, "Error closing server socket", e);
-        }
-
-        Log.d(TAG, "ServerThread closed successfully");
+        Log.d(TAG, "ServerThread closed");
     }
 }

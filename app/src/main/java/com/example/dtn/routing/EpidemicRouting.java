@@ -5,30 +5,47 @@ import android.net.wifi.p2p.WifiP2pDevice;
 import android.util.Log;
 
 import com.example.dtn.data.Message;
+import com.example.dtn.data.MessageDao;
 import com.example.dtn.network.ClientThread;
 import com.example.dtn.network.ServerThread;
 import com.example.dtn.utils.Logger;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class EpidemicRouting implements RoutingProtocol {
 
     private static final String TAG = "EpidemicRouting";
+    private static final int MAX_HOPS = 15; // FIXED: Prevent infinite loops
+
     private final Logger logger;
     private final String ownDeviceId;
+    private final MessageDao messageDao;
+    private final ExecutorService dbExecutor;
 
-    public EpidemicRouting(Context context, String ownDeviceId) {
+    // FIXED: Track which messages each peer has seen
+    private final Map<String, Set<String>> peerMessageHistory;
+    private final Object historyLock = new Object();
+
+    public EpidemicRouting(Context context, String ownDeviceId, MessageDao messageDao) {
         this.logger = Logger.getInstance(context);
         this.ownDeviceId = ownDeviceId;
+        this.messageDao = messageDao;
+        this.dbExecutor = Executors.newSingleThreadExecutor();
+        this.peerMessageHistory = new HashMap<>();
     }
 
     @Override
     public void forwardMessages(List<Message> messagesToForward, WifiP2pDevice peer,
                                 ServerThread serverThread, ClientThread clientThread) {
 
-        // Validate inputs
-        if (peer == null || peer.deviceName == null) {
+        if (peer == null || (peer.deviceName == null && peer.deviceAddress == null)) {
             Log.e(TAG, "Invalid peer device");
             return;
         }
@@ -38,44 +55,57 @@ public class EpidemicRouting implements RoutingProtocol {
             return;
         }
 
-        // Epidemic Routing: Forward ALL messages to encountered peer (flooding approach)
+        String peerId = peer.deviceAddress != null ? peer.deviceAddress : peer.deviceName;
+
         for (Message message : messagesToForward) {
-            // Skip if message is from this peer (avoid forwarding back to sender)
-            if (message.source_id != null && message.source_id.equals(peer.deviceName)) {
-                Log.d(TAG, "Skipping message from sender: " + message.message_id);
+            // FIXED: Use consistent device identifier (MAC address preferred)
+            if (message.source_id != null) {
+                String sourceId = message.source_id;
+                if (sourceId.equals(peerId)) {
+                    Log.d(TAG, "Skipping message from sender: " + message.message_id);
+                    continue;
+                }
+            }
+
+            // FIXED: Check hop count limit
+            if (message.hop_count >= MAX_HOPS) {
+                Log.d(TAG, "Message reached max hops: " + message.message_id);
                 continue;
             }
 
-            forwardMessage(message, peer, serverThread, clientThread);
+            // FIXED: Check if peer already has this message
+            if (hasPeerSeenMessage(peerId, message.message_id)) {
+                Log.d(TAG, "Peer already has message: " + message.message_id);
+                continue;
+            }
+
+            forwardMessage(message, peer, peerId, serverThread, clientThread);
+            recordMessageForPeer(peerId, message.message_id);
         }
 
+        int forwardedCount = messagesToForward.size();
         Log.d(TAG, String.format(Locale.US, "Epidemic: Forwarded %d messages to %s",
-                messagesToForward.size(), peer.deviceName));
+                forwardedCount, peerId));
     }
 
     /**
-     * Forward a single message via the active connection (server OR client, not both)
-     * Epidemic routing uses unlimited replication - every peer gets a copy
+     * FIXED: Forward a single message
      */
-    private void forwardMessage(Message message, WifiP2pDevice peer,
+    private void forwardMessage(Message message, WifiP2pDevice peer, String peerId,
                                 ServerThread serverThread, ClientThread clientThread) {
-        // Increment hop count
         message.hop_count++;
 
-        // Log forwarding event with detailed information
         logger.logEvent(String.format(Locale.US,
                 "EVENT=MESSAGE_FORWARDED | PROTOCOL=EPIDEMIC | MSG_ID=%s | FROM=%s | TO=%s | HOPS=%d | DEST=%s",
-                message.message_id, ownDeviceId, peer.deviceName, message.hop_count, message.destination_id));
+                message.message_id, ownDeviceId, peerId, message.hop_count, message.destination_id));
 
-        // Send via whichever thread is active (NOT both)
-        // You're either server OR client in a connection, never both simultaneously
         boolean sent = false;
 
-        if (serverThread != null && serverThread.isAlive()) {
+        if (serverThread != null && serverThread.isConnected()) {
             serverThread.write(message);
             sent = true;
             Log.d(TAG, String.format("Sent message %s via ServerThread", message.message_id));
-        } else if (clientThread != null && clientThread.isAlive()) {
+        } else if (clientThread != null && clientThread.isConnected()) {
             clientThread.write(message);
             sent = true;
             Log.d(TAG, String.format("Sent message %s via ClientThread", message.message_id));
@@ -85,6 +115,45 @@ public class EpidemicRouting implements RoutingProtocol {
             Log.e(TAG, "Failed to send message: " + message.message_id + " - no active thread");
             logger.logEvent(String.format(Locale.US,
                     "EVENT=SEND_FAILED | MSG_ID=%s | REASON=NO_ACTIVE_THREAD", message.message_id));
+        }
+    }
+
+    /**
+     * FIXED: Check if peer has seen this message
+     */
+    private boolean hasPeerSeenMessage(String peerId, String messageId) {
+        synchronized (historyLock) {
+            Set<String> messages = peerMessageHistory.getOrDefault(peerId, new HashSet<>());
+            return messages.contains(messageId);
+        }
+    }
+
+    /**
+     * FIXED: Record message as forwarded to peer
+     */
+    private void recordMessageForPeer(String peerId, String messageId) {
+        synchronized (historyLock) {
+            peerMessageHistory.computeIfAbsent(peerId, k -> new HashSet<>()).add(messageId);
+        }
+    }
+
+    /**
+     * Clear history for a disconnected peer to free memory
+     */
+    public void clearPeerHistory(String peerId) {
+        synchronized (historyLock) {
+            peerMessageHistory.remove(peerId);
+            Log.d(TAG, "Cleared history for peer: " + peerId);
+        }
+    }
+
+    /**
+     * Shutdown executor
+     */
+    public void shutdown() {
+        if (dbExecutor != null && !dbExecutor.isShutdown()) {
+            dbExecutor.shutdown();
+            Log.d(TAG, "Executor shutdown");
         }
     }
 }
