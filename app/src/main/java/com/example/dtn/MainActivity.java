@@ -5,6 +5,10 @@ import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -31,6 +35,8 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
@@ -42,6 +48,9 @@ import com.example.dtn.data.Friend;
 import com.example.dtn.data.FriendDao;
 import com.example.dtn.data.Message;
 import com.example.dtn.data.MessageDao;
+import com.example.dtn.network.BluetoothBroadcastReceiver;
+import com.example.dtn.network.BluetoothClientThread;
+import com.example.dtn.network.BluetoothServerThread;
 import com.example.dtn.network.ClientThread;
 import com.example.dtn.network.ServerThread;
 import com.example.dtn.network.WifiDirectBroadcastReceiver;
@@ -57,6 +66,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
@@ -92,12 +102,6 @@ public class MainActivity extends AppCompatActivity {
     WifiP2pDevice[] deviceArray;
     private boolean isWifiDirectReceiverRegistered = false;
 
-    // --- Bluetooth ---
-    BluetoothAdapter bluetoothAdapter;
-    BroadcastReceiver bluetoothBroadcastReceiver; // FIXED: renamed from bluetoothReceiver
-    IntentFilter bluetoothIntentFilter;
-    List<BluetoothDevice> bluetoothPeers = new ArrayList<>();
-    private boolean isBluetoothReceiverRegistered = false;
 
     // --- Transport Selection ---
     private enum TransportType {WIFI_DIRECT, BLUETOOTH}
@@ -108,6 +112,7 @@ public class MainActivity extends AppCompatActivity {
     ServerThread serverThread;
     ClientThread clientThread;
     Handler handler;
+
     ExecutorService executor = Executors.newSingleThreadExecutor();
 
     // --- Chat Data ---
@@ -117,15 +122,29 @@ public class MainActivity extends AppCompatActivity {
     // --- Logging & Routing ---
     Logger logger;
     RoutingProtocol activeRoutingProtocol;
-    EpidemicRouting epidemicRouting; // FIXED: Added these fields
-    SprayAndWaitRouting sprayAndWaitRouting; // FIXED: Added these fields
+    EpidemicRouting epidemicRouting;
+    SprayAndWaitRouting sprayAndWaitRouting;
     public static final String PREFS_NAME = "DTNPrefs";
     public static final String KEY_ROUTING_PROTOCOL = "RoutingProtocol";
     private String currentProtocol = "EPIDEMIC";
-    public String ownDeviceId = null; // store MAC
+    public String ownDeviceId = null;
 
     private final Queue<PendingMessage> pendingMessages = new ConcurrentLinkedQueue<>();
     private volatile boolean isDeviceIdReady = false;
+    private BluetoothAdapter bluetoothAdapter;
+    private BluetoothBroadcastReceiver bluetoothReceiver;
+    private IntentFilter bluetoothIntentFilter;
+    private BluetoothServerThread bluetoothServerThread;
+    private BluetoothClientThread bluetoothClientThread;
+    private volatile boolean isBluetoothConnected = false;
+    private String connectedBluetoothDeviceName = null;
+    private List<BluetoothDevice> bluetoothDevices = new ArrayList<>();
+    private static final int REQUEST_ENABLE_BT = 1;
+    private static final int REQUEST_PERMISSIONS = 2;
+    private boolean isBluetoothReceiverRegistered = false;
+    private Handler discoveryHandler = new Handler(Looper.getMainLooper());
+    private Handler discoveryRetryHandler = new Handler(Looper.getMainLooper());
+    private Runnable discoveryRunnable;
 
     public static class ChatMessage {
         String text;
@@ -178,32 +197,75 @@ public class MainActivity extends AppCompatActivity {
 //            Log.d(TAG, "MAC not available yet, will be set on Wi-Fi Direct connection");
 //        }
 
+        requestPermissions(); // Asks user for runtime permissions (Android 6+)
         initializeUI(); // Calls findViewById() to link Java variables to XML layout elements
         updateProtocolDisplay(); // Updates the UI to show current protocol
         updateTransportDisplay(); // Updates the UI to show current transport
         setupPrioritySpinner(); // Initializes the priority dropdown menu
+
         initializeDatabase(); // Creates/opens Room database
         logger = Logger.getInstance(getApplicationContext()); // All threads can log to same file
         initializeHandler(); // Creates a Handler for message passing between threads
         setListeners(); // Attaches click listeners to UI buttons
-        requestPermissions(); // Asks user for runtime permissions (Android 6+)
-
-
 
         // Initialize both transports
         initializeWifiDirect(); // Sets up Wi-Fi Direct
-
-
-
+        initializeBluetooth();// sets up bluetooth
 
         // Chooses which transport to use (Wi-Fi Direct or Bluetooth)
         selectBestTransport();
-
 
         // Gets the unique MAC address for this device
 //        initializeDeviceIdSync();
         Log.d(TAG, "onCreate() completed. Initial ownDeviceId: " + ownDeviceId);
 
+        discoveryRunnable = () -> {
+            // ✓ CHECK ACTIVE TRANSPORT FIRST!
+            if (activeTransport == TransportType.WIFI_DIRECT) {
+                // Wi-Fi Direct discovery
+                if (manager != null && channel != null) {
+                    Log.d(TAG, "🔍 Starting Wi-Fi Direct discovery...");
+                    manager.discoverPeers(channel, new WifiP2pManager.ActionListener() {
+                        @Override
+                        public void onSuccess() {
+                            Log.d(TAG, "✓ Wi-Fi Direct discovery initiated");
+                        }
+
+                        @Override
+                        public void onFailure(int reason) {
+                            Log.w(TAG, "Wi-Fi Direct discovery failed (code: " + reason + ")");
+                        }
+                    });
+                }
+            }
+            else if (activeTransport == TransportType.BLUETOOTH) {
+                // Bluetooth discovery
+                if (bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
+                    Log.d(TAG, "🔍 Starting Bluetooth discovery...");
+
+                    // Cancel previous discovery
+                    if (bluetoothAdapter.isDiscovering()) {
+                        bluetoothAdapter.cancelDiscovery();
+                    }
+
+                    // Start new discovery
+                    boolean started = bluetoothAdapter.startDiscovery();
+                    if (started) {
+                        Log.d(TAG, "✓ Bluetooth discovery initiated");
+                    } else {
+                        Log.w(TAG, "Bluetooth discovery failed to start");
+                    }
+                } else {
+                    Log.w(TAG, "Bluetooth adapter not available or not enabled");
+                }
+            }
+
+            // Schedule next discovery in 10 seconds
+            discoveryHandler.postDelayed(discoveryRunnable, 10000);
+        };
+
+// Start discovery immediately
+        discoveryHandler.post(discoveryRunnable);
 
     }
 
@@ -322,24 +384,54 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeHandler() {
-        // Handler receives message from background thread
+        // Handler receives messages from background threads
         handler = new Handler(Looper.getMainLooper(), msg -> {
+
+            // ════════════════════════════════════════════════════════════════
+            // FROM WI-FI DIRECT THREADS
+            // ════════════════════════════════════════════════════════════════
+
             if (msg.what == ServerThread.MESSAGE_READ) {
-                // msg.what = MESSAGE_READ (value = 1)
-                // msg.obj = our Message object
+                Log.d(TAG, "Handler: Message from Wi-Fi Direct ServerThread");
 
                 Message receivedMessage = (Message) msg.obj;
-                // receivedMessage now on MAIN thread ✓
-
-                Log.d(TAG, "Handler received: " + receivedMessage.message_id);
-
-                // Pass to main message handler
-                handleReceivedMessage(receivedMessage);
+                if (receivedMessage != null) {
+                    Log.d(TAG, "Handler received (Wi-Fi Direct): " + receivedMessage.message_id);
+                    handleReceivedMessage(receivedMessage);
+                }
+                return true;
             }
-            return true;
-        });
 
+            // ════════════════════════════════════════════════════════════════
+            // FROM BLUETOOTH THREADS
+            // ════════════════════════════════════════════════════════════════
+
+            if (msg.what == BluetoothClientThread.MESSAGE_READ) {
+                Log.d(TAG, "Handler: Message from Bluetooth ClientThread");
+
+                Message receivedMessage = (Message) msg.obj;
+                if (receivedMessage != null) {
+                    Log.d(TAG, "Handler received (Bluetooth): " + receivedMessage.message_id);
+                    handleReceivedMessage(receivedMessage);  // Same handler!
+                }
+                return true;
+            }
+
+            if (msg.what == BluetoothServerThread.MESSAGE_READ) {
+                Log.d(TAG, "Handler: Message from Bluetooth ServerThread");
+
+                Message receivedMessage = (Message) msg.obj;
+                if (receivedMessage != null) {
+                    Log.d(TAG, "Handler received (Bluetooth): " + receivedMessage.message_id);
+                    handleReceivedMessage(receivedMessage);  // Same handler!
+                }
+                return true;
+            }
+
+            return false;
+        });
     }
+
 
     private void setListeners() {
         peerListView.setOnItemLongClickListener((parent, view, position, id) -> { // Add friend
@@ -353,14 +445,14 @@ public class MainActivity extends AppCompatActivity {
                         .setNegativeButton("No", null)
                         .show();
             } else {
-                if (bluetoothPeers == null || position >= bluetoothPeers.size()) return false;
-                final BluetoothDevice device = bluetoothPeers.get(position);
-                new AlertDialog.Builder(this)
-                        .setTitle("Add Friend")
-                        .setMessage("Add " + device.getName() + " as friend?")
-                        .setPositiveButton("Yes", (dialog, which) -> addBluetoothFriend(device))
-                        .setNegativeButton("No", null)
-                        .show();
+//                if (bluetoothPeers == null || position >= bluetoothPeers.size()) return false;
+//                final BluetoothDevice device = bluetoothPeers.get(position);
+//                new AlertDialog.Builder(this)
+//                        .setTitle("Add Friend")
+//                        .setMessage("Add " + device.getName() + " as friend?")
+//                        .setPositiveButton("Yes", (dialog, which) -> addBluetoothFriend(device))
+//                        .setNegativeButton("No", null)
+//                        .show();
             }
             return true;
         });
@@ -369,7 +461,7 @@ public class MainActivity extends AppCompatActivity {
             if (activeTransport == TransportType.WIFI_DIRECT) {
                 connectToWifiDirectDevice(position);
             } else {
-                connectToBluetoothDevice(position);
+//                connectToBluetoothDevice(position);
             }
         });
 
@@ -417,87 +509,66 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void connectToBluetoothDevice(int position) {
-        if (bluetoothPeers == null || position >= bluetoothPeers.size()) {
-            Toast.makeText(this, "Invalid peer selection", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        final BluetoothDevice device = bluetoothPeers.get(position);
-        Log.d(TAG, "Connecting to (Bluetooth): " + device.getName());
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-                    != PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Bluetooth permission required", Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
-
-        Toast.makeText(this, "Connecting to " + device.getName(), Toast.LENGTH_SHORT).show();
-        onBluetoothDeviceSelected(device);
-    }
-
     private void sendMessage() {
-        // 1. GET MESSAGE TEXT FROM INPUT FIELD
         String msgText = messageEditText.getText().toString().trim();
         if (msgText.isEmpty()) {
             Toast.makeText(this, "Message is empty", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // 2. CHECK IF CONNECTED TO A DEVICE
-        if (serverThread == null && clientThread == null) {
-            Toast.makeText(this, "Not connected to any device", Toast.LENGTH_SHORT).show();
-            return;
-        }
+        // Declare it before the condition
+        String targetDevice = null;
 
-        // 3. GET DESTINATION DEVICE (whoever we're connected to)
-        String targetDevice;
         if (activeTransport == TransportType.WIFI_DIRECT) {
+            // Wi-Fi Direct mode
+            Log.d(TAG, "Sending via Wi-Fi Direct");
+
+            if (serverThread == null && clientThread == null) {
+                Toast.makeText(this, "Not connected to any device", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
             if (deviceArray == null || deviceArray.length == 0) {
                 Toast.makeText(this, "No destination peer available", Toast.LENGTH_SHORT).show();
                 return;
             }
-
-            // Get first connected peer's Name (not MAC address)
             targetDevice = deviceArray[0].deviceName;
-        } else {
-            if (bluetoothPeers == null || bluetoothPeers.isEmpty()) {
-                Toast.makeText(this, "No destination peer available", Toast.LENGTH_SHORT).show();
+        }else if (activeTransport == TransportType.BLUETOOTH) {
+            // Bluetooth mode
+            Log.d(TAG, "Sending via Bluetooth");
+
+            // Check Bluetooth connection
+            if (!isBluetoothConnected) {
+                Toast.makeText(this, "Not connected via Bluetooth", Toast.LENGTH_SHORT).show();
+                Log.w(TAG, "Cannot send: isBluetoothConnected = " + isBluetoothConnected);
                 return;
             }
-            targetDevice = bluetoothPeers.get(0).getName();
+
+            // Check threads exist
+            if (bluetoothClientThread == null && bluetoothServerThread == null) {
+                Toast.makeText(this, "Bluetooth threads not initialized", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            //  Get target device name from Bluetooth connection
+            // For Bluetooth, we know who we're connected to
+            targetDevice = connectedBluetoothDeviceName;  // ← Set this when connected
+
+            if (targetDevice == null || targetDevice.isEmpty()) {
+                Toast.makeText(this, "Target device unknown", Toast.LENGTH_SHORT).show();
+                return;
+            }
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        // NEW: Check if device ID is ready
-        // ═══════════════════════════════════════════════════════════════════
-
-        if (!isDeviceIdReady || ownDeviceId == null || ownDeviceId.contains("-")) {
-            // Device ID NOT ready yet - QUEUE the message
-            Log.d(TAG, "Device ID not ready, queueing message");
-            pendingMessages.offer(new PendingMessage(targetDevice, msgText));
-
-            // Display immediately (with pending status)
-            String displayText = String.format(Locale.US, "Me: %s ⏳", msgText);
-            ChatMessage chatMessage = new ChatMessage(displayText, UUID.randomUUID().toString(), false);
-            chatMessages.add(chatMessage);
-            chatAdapter.notifyDataSetChanged();
-            chatListView.smoothScrollToPosition(chatMessages.size() - 1);
-            messageEditText.setText("");
-
-            Toast.makeText(this, "⏳ Message queued (waiting for device ID)", Toast.LENGTH_SHORT).show();
+        if (targetDevice == null) {
+            Toast.makeText(this, "No valid target device", Toast.LENGTH_SHORT).show();
             return;
-
         }
-        //Device id is ready
+
+        // Device id is ready
         actuallyTransmitMessage(msgText, targetDevice);
     }
 
-    /**
-     * Actually transmit a message (after device ID is ready)
-     */
     private void actuallyTransmitMessage(String msgText, String destinationId) {
         final Message message = new Message();
 
@@ -526,23 +597,72 @@ public class MainActivity extends AppCompatActivity {
                 Log.d(TAG, "Message saved: " + message.message_id);
 
                 boolean sent = false;
-                if (serverThread != null && serverThread.isConnected()) {
-                    serverThread.write(message);
-                    sent = true;
-                } else if (clientThread != null && clientThread.isConnected()) {
-                    clientThread.write(message);
-                    sent = true;
+
+                if (activeTransport == TransportType.BLUETOOTH) {
+                    // ✓ Bluetooth transmission
+                    Log.d(TAG, "Attempting Bluetooth transmission...");
+
+                    if (bluetoothClientThread != null && bluetoothClientThread.isAlive()) {
+                        bluetoothClientThread.write(message);
+                        sent = true;
+                        Log.d(TAG, "✓ Sent via Bluetooth ClientThread");
+
+                    } else if (bluetoothServerThread != null && bluetoothServerThread.isAlive()) {
+                        bluetoothServerThread.write(message);
+                        sent = true;
+                        Log.d(TAG, "✓ Sent via Bluetooth ServerThread");
+
+                    } else {
+                        Log.e(TAG, "Bluetooth threads not available");
+                    }
+
+                } else if (activeTransport == TransportType.WIFI_DIRECT) {
+                    // Wi-Fi Direct transmission
+                    Log.d(TAG, "Attempting Wi-Fi Direct transmission...");
+
+                    if (serverThread != null && serverThread.isConnected()) {
+                        serverThread.write(message);
+                        sent = true;
+                        Log.d(TAG, "✓ Sent via Wi-Fi Direct ServerThread");
+
+                    } else if (clientThread != null && clientThread.isConnected()) {
+                        clientThread.write(message);
+                        sent = true;
+                        Log.d(TAG, "✓ Sent via Wi-Fi Direct ClientThread");
+
+                    } else {
+                        Log.e(TAG, "Wi-Fi Direct threads not available");
+                    }
                 }
 
                 if (sent) {
                     Log.d(TAG, "✓ Message transmitted: " + message.message_id);
+
+                    // Update UI on main thread
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "✓ Message sent", Toast.LENGTH_SHORT).show();
+                    });
+
+                } else {
+                    Log.e(TAG, "Failed to transmit message - no active connection");
+
+                    // Update UI on main thread
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this, "Failed to send - connection lost", Toast.LENGTH_SHORT).show();
+                    });
                 }
 
             } catch (Exception e) {
                 Log.e(TAG, "Error sending message", e);
+                e.printStackTrace();
+
+                runOnUiThread(() -> {
+                    Toast.makeText(MainActivity.this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                });
             }
         });
     }
+
 
     private String getConnectionFailureReason(int reason) {
         switch (reason) {
@@ -732,67 +852,6 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-
-//    public void onBluetoothDeviceDiscovered(final BluetoothDevice device) {
-//        if (!bluetoothPeers.contains(device)) {
-//            bluetoothPeers.add(device);
-//            updateBluetoothPeerList();
-//            String deviceName = "Unknown";
-//            try {
-//                deviceName = device.getName();
-//            } catch (SecurityException e) {
-//                Log.e(TAG, "SecurityException getting device name", e);
-//            }
-//            Log.d(TAG, "Bluetooth device discovered: " + deviceName);
-//        }
-//    }
-
-    public void onBluetoothDeviceSelected(final BluetoothDevice device) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    Log.w(TAG, "BLUETOOTH_CONNECT permission not granted");
-                    return;
-                }
-            }
-            Log.d(TAG, "Bluetooth device selected: " + device.getName());
-            Toast.makeText(this, "Bluetooth connection (coming soon)", Toast.LENGTH_SHORT).show();
-        } catch (SecurityException e) {
-            Log.e(TAG, "SecurityException in onBluetoothDeviceSelected", e);
-        }
-    }
-
-//    public void onBluetoothDiscoveryFinished() {
-//        Log.d(TAG, "Bluetooth discovery finished");
-//    }
-//
-//    private void updateBluetoothPeerList() {
-//        try {
-//            String[] bluetoothDeviceNames = new String[bluetoothPeers.size()];
-//            for (int i = 0; i < bluetoothPeers.size(); i++) {
-//                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-//                    if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-//                            == PackageManager.PERMISSION_GRANTED) {
-//                        bluetoothDeviceNames[i] = bluetoothPeers.get(i).getName();
-//                    } else {
-//                        bluetoothDeviceNames[i] = "Unknown Device";
-//                    }
-//                } else {
-//                    bluetoothDeviceNames[i] = bluetoothPeers.get(i).getName();
-//                }
-//            }
-//
-//            ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
-//                    android.R.layout.simple_list_item_1, bluetoothDeviceNames);
-//            peerListView.setAdapter(adapter);
-//
-//            Log.d(TAG, "Updated Bluetooth peer list: " + bluetoothPeers.size() + " devices");
-//        } catch (SecurityException e) {
-//            Log.e(TAG, "SecurityException updating Bluetooth peer list", e);
-//        }
-//    }
-
     private void addWifiDirectFriend(final WifiP2pDevice device) {
         executor.execute(() -> {
             try {
@@ -811,44 +870,6 @@ public class MainActivity extends AppCompatActivity {
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Error adding Wi-Fi Direct friend", e);
-            }
-        });
-    }
-
-    private void addBluetoothFriend(final BluetoothDevice device) {
-        executor.execute(() -> {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-                            != PackageManager.PERMISSION_GRANTED) {
-                        runOnUiThread(() ->
-                                Toast.makeText(MainActivity.this, "Bluetooth permission required", Toast.LENGTH_SHORT).show()
-                        );
-                        return;
-                    }
-                }
-
-                String deviceId = device.getAddress();
-                Friend existingFriend = friendDao.getFriendById(deviceId);
-                if (existingFriend == null) {
-                    Friend newFriend = new Friend();
-                    newFriend.deviceId = deviceId;
-                    newFriend.friendlyName = device.getName();
-                    newFriend.lastEncounteredTimestamp = 0;
-                    friendDao.insert(newFriend);
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, device.getName() +
-                            " added as friend", Toast.LENGTH_SHORT).show());
-                } else {
-                    runOnUiThread(() -> Toast.makeText(MainActivity.this, device.getName() +
-                            " already a friend", Toast.LENGTH_SHORT).show());
-                }
-            } catch (SecurityException e) {
-                Log.e(TAG, "SecurityException adding Bluetooth friend", e);
-                runOnUiThread(() ->
-                        Toast.makeText(MainActivity.this, "Permission denied", Toast.LENGTH_SHORT).show()
-                );
-            } catch (Exception e) {
-                Log.e(TAG, "Error adding Bluetooth friend", e);
             }
         });
     }
@@ -946,9 +967,25 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     chatMessages.clear();
 
+                    // ✓ Get my device name once
+                    String myDeviceName = getMyDeviceName();
+                    Log.d(TAG, "My device name: " + myDeviceName);
+
                     for (Message msg : allMessages) {
-                        boolean isFromMe = msg.source_id.equals(ownDeviceId);
-                        boolean isForMe = msg.destination_id.equals(ownDeviceId);
+                        // ✓ NULL CHECKS FIRST
+                        if (msg == null) {
+                            Log.w(TAG, "Null message skipped");
+                            continue;
+                        }
+
+                        if (msg.message_id == null || msg.source_id == null || msg.destination_id == null) {
+                            Log.w(TAG, "Message with null fields skipped: " + msg.message_id);
+                            continue;
+                        }
+
+                        // ✓ CHANGED: Use getMyDeviceName() instead of ownDeviceId
+                        boolean isFromMe = msg.source_id.equals(myDeviceName);
+                        boolean isForMe = msg.destination_id.equals(myDeviceName);
 
                         if (!isFromMe && !isForMe) {
                             Log.d(TAG, "Skipping transit message: " + msg.message_id);
@@ -956,14 +993,15 @@ public class MainActivity extends AppCompatActivity {
                         }
 
                         try {
-                            // FIXED: Added Context parameter
                             String decryptedText = CryptoUtils.decrypt(msg.encrypted_payload);
 
                             String displayText;
                             if (isFromMe) {
+                                // ✓ CHANGED: Show source device name
                                 displayText = "Me: " + decryptedText;
                             } else {
-                                displayText = "Peer: " + decryptedText;
+                                // ✓ CHANGED: Show as "DeviceName: message"
+                                displayText = msg.source_id + ": " + decryptedText;
                             }
 
                             ChatMessage chatMessage = new ChatMessage(
@@ -972,6 +1010,8 @@ public class MainActivity extends AppCompatActivity {
                                     msg.is_delivered
                             );
                             chatMessages.add(chatMessage);
+
+                            Log.d(TAG, "Added message: " + displayText);
 
                         } catch (Exception e) {
                             Log.e(TAG, "Error decrypting message: " + msg.message_id, e);
@@ -988,6 +1028,7 @@ public class MainActivity extends AppCompatActivity {
 
             } catch (Exception e) {
                 Log.e(TAG, "Error loading messages", e);
+                e.printStackTrace();
             }
         });
     }
@@ -1049,60 +1090,6 @@ public class MainActivity extends AppCompatActivity {
             }
         });
     }
-    /**
-     * HELPER METHOD: Ensure device ID is set
-     * Waits synchronously for device info callback
-     */
-//    private void ensureDeviceIdIsSet() {
-//        if (activeTransport == TransportType.WIFI_DIRECT) {
-//            if (manager == null || channel == null) {
-//                Log.w(TAG, "Manager or channel is null");
-//                return;
-//            }
-//
-//            try {
-//                // Use lock for synchronous waiting
-//                final Object lock = new Object();
-//                final String[] resultHolder = new String[1];
-//
-//                manager.requestDeviceInfo(channel, device -> {
-//                    synchronized (lock) {
-//                        if (device != null && device.deviceAddress != null) {
-//                            resultHolder[0] = device.deviceAddress;
-//                            Log.d(TAG, "Got device info: " + resultHolder[0]);
-//                        }
-//                        lock.notifyAll();  // Wake up waiting thread
-//                    }
-//                });
-//
-//                // Wait for callback with timeout
-//                synchronized (lock) {
-//                    try {
-//                        lock.wait(2000);  // Max 2 seconds wait
-//
-//                        if (resultHolder[0] != null) {
-//                            ownDeviceId = resultHolder[0];
-//                            Log.d(TAG, "✅ Device ID updated: " + ownDeviceId);
-//                        }
-//                    } catch (InterruptedException e) {
-//                        Log.e(TAG, "Interrupted while waiting for device ID");
-//                        Thread.currentThread().interrupt();
-//                    }
-//                }
-//            } catch (Exception e) {
-//                Log.e(TAG, "Error getting device ID", e);
-//            }
-//        } else if (activeTransport == TransportType.BLUETOOTH) {
-//            try {
-//                if (bluetoothAdapter != null) {
-//                    ownDeviceId = bluetoothAdapter.getAddress();
-//                    Log.d(TAG, "✅ Bluetooth device ID: " + ownDeviceId);
-//                }
-//            } catch (SecurityException e) {
-//                Log.e(TAG, "SecurityException getting Bluetooth address", e);
-//            }
-//        }
-//    }
 
     private void processDataMessage(Message message) throws Exception {
         Log.d(TAG, "Processing DATA message: " + message.message_id);
@@ -1147,8 +1134,8 @@ public class MainActivity extends AppCompatActivity {
         // ═══════════════════════════════════════════════════════════════════
 
         Log.d(TAG, "Checking destination...");
-        Log.d(TAG, "  My MAC: " + myDeviceMac);
-        Log.d(TAG, "  Message destinatio n: " + message.destination_id);
+        Log.d(TAG, "  My name : " + myDeviceName);
+        Log.d(TAG, "  Message destination: " + message.destination_id);
 
         // CHANGE 3: Use myDeviceMac instead of ownDeviceId for comparison
         boolean isForMe = (myDeviceName!= null && myDeviceName.equals(message.destination_id));
@@ -1214,66 +1201,32 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
+    private void initializeMyDeviceName() {
+        // Get this device's Bluetooth name
+        ownDeviceId = bluetoothAdapter.getName();
 
-    /**
-     * Get this device's name
-     * @return Device name (e.g., "Redmi Note 12 Pro 5G")
-     */
-    private String getMyDeviceName() {
-        // Try 1: From saved preferences
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        String savedName = prefs.getString("MY_DEVICE_NAME", null);
-
-        if (savedName != null && !savedName.isEmpty()) {
-            Log.d(TAG, "Got device name from preferences: " + savedName);
-            return savedName;
+        if (ownDeviceId == null || ownDeviceId.isEmpty()) {
+            // Fallback to Android device name
+            ownDeviceId = Settings.Secure.getString(
+                    getContentResolver(),
+                    "bluetooth_name"
+            );
         }
 
-        // Try 2: From Wi-Fi Direct manager
-        if (manager != null && channel != null) {
-            final String[] nameHolder = new String[1];
-            final Object lock = new Object();
-
-            manager.requestDeviceInfo(channel, device -> {
-                synchronized (lock) {
-                    if (device != null && device.deviceName != null) {
-                        nameHolder[0] = device.deviceName;
-                    }
-                    lock.notifyAll();
-                }
-            });
-
-            synchronized (lock) {
-                try {
-                    lock.wait(1000); // Short timeout
-                    if (nameHolder[0] != null) {
-                        // Save for future use
-                        prefs.edit().putString("MY_DEVICE_NAME", nameHolder[0]).apply();
-                        Log.d(TAG, "Got device name from manager: " + nameHolder[0]);
-                        return nameHolder[0];
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
+        if (ownDeviceId == null || ownDeviceId.isEmpty()) {
+            // Last resort fallback
+            ownDeviceId = Build.MODEL;
         }
 
-        // Try 3: From Android Settings (fallback)
-        String deviceName = Settings.Global.getString(getContentResolver(), "device_name");
-        if (deviceName == null) {
-            deviceName = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-        }
-
-        if (deviceName != null) {
-            Log.d(TAG, "Got device name from Settings: " + deviceName);
-            prefs.edit().putString("MY_DEVICE_NAME", deviceName).apply();
-            return deviceName;
-        }
-
-        Log.w(TAG, "⚠️ Could not determine device name");
-        return null;
+        Log.d(TAG, "✓ My device name: " + ownDeviceId);
     }
-
+    private String getMyDeviceName() {
+        if (ownDeviceId == null || ownDeviceId.isEmpty()) {
+            Log.e(TAG, "Device name not initialized!");
+            initializeMyDeviceName();
+        }
+        return ownDeviceId;
+    }
 
     private void generateAndSendAck(Message originalMessage) throws Exception {
         // 1. CREATE ACK MESSAGE
@@ -1418,54 +1371,474 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void requestPermissions() {
+        Log.d(TAG, "Checking and requesting permissions...");
+
         List<String> permissionsToRequest = new ArrayList<>();
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION); // - ACCESS_FINE_LOCATION (for Wi-Fi Direct discovery)
-            }
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 1: Location (needed for both Wi-Fi Direct and Bluetooth)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (ActivityCompat.checkSelfPermission(this,
+                Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            Log.d(TAG, "Need ACCESS_FINE_LOCATION");
         }
 
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-            }
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES); // - NEARBY_WIFI_DEVICES (Android 13+)
-            }
-        }
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 2: Bluetooth Permissions (Android 12+)
+        // ════════════════════════════════════════════════════════════════════
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN); // - BLUETOOTH_SCAN (for Bluetooth discovery)
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN);
+                Log.d(TAG, "Need BLUETOOTH_SCAN");
             }
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-                    != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT); // - BLUETOOTH_CONNECT (for Bluetooth)
+
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT);
+                Log.d(TAG, "Need BLUETOOTH_CONNECT");
+            }
+
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_ADVERTISE);
+                Log.d(TAG, "Need BLUETOOTH_ADVERTISE");
             }
         }
 
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 3: Wi-Fi Direct (Android 13+)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+                Log.d(TAG, "Need NEARBY_WIFI_DEVICES");
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 4: External Storage (Android 12 and below)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+                Log.d(TAG, "Need WRITE_EXTERNAL_STORAGE");
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 5: Request all missing permissions
+        // ════════════════════════════════════════════════════════════════════
+
         if (!permissionsToRequest.isEmpty()) {
+            Log.d(TAG, "💬 Requesting " + permissionsToRequest.size() + " permissions");
             ActivityCompat.requestPermissions(this,
-                    permissionsToRequest.toArray(new String[0]), 1);
+                    permissionsToRequest.toArray(new String[0]),
+                    REQUEST_PERMISSIONS);
         } else {
+            Log.d(TAG, "✓ All permissions already granted");
+            // All permissions already granted, start discovery
             discoverPeers();
         }
     }
 
+    private void initializeBluetooth() {
+        Log.d(TAG, "Initializing Bluetooth...");
+
+        bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+
+        if (bluetoothAdapter == null) {
+            Log.w(TAG, "Bluetooth not available");
+            Toast.makeText(this, "Bluetooth not supported", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Log.d(TAG, "✓ Bluetooth adapter found");
+
+        // create and register receiver
+        bluetoothReceiver = new BluetoothBroadcastReceiver(this);
+        bluetoothIntentFilter = new IntentFilter();
+        bluetoothIntentFilter.addAction(BluetoothDevice.ACTION_FOUND);
+        bluetoothIntentFilter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+        bluetoothIntentFilter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+        bluetoothIntentFilter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+
+        registerReceiver(bluetoothReceiver, bluetoothIntentFilter);
+        isBluetoothReceiverRegistered = true;
+
+        Log.d(TAG, "✓ Bluetooth receiver registered");
+
+        // Check if enabled
+        if (!bluetoothAdapter.isEnabled()) {
+            Log.d(TAG, "Bluetooth disabled, requesting enable...");
+            Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            enableBluetoothLauncher.launch(enableIntent);
+        } else {
+            Log.d(TAG, "✓ Bluetooth already enabled");
+        }
+    }
+    // Start Bluetooth discovery
+//    public void startBluetoothDiscovery() {
+//        Log.d(TAG, "Starting Bluetooth discovery...");
+//
+//        //  Check all prerequisites ===
+//        Log.d(TAG, "DEBUG: bluetoothAdapter = " + bluetoothAdapter);
+//        Log.d(TAG, "DEBUG: isEnabled = " + (bluetoothAdapter != null ? bluetoothAdapter.isEnabled() : "NULL"));
+//
+//        // Check permissions
+//        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+//            boolean hasScan = ActivityCompat.checkSelfPermission(this,
+//                    Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
+//            Log.d(TAG, "DEBUG: BLUETOOTH_SCAN permission = " + hasScan);
+//
+//            if (!hasScan) {
+//                Log.e(TAG, "❌ BLUETOOTH_SCAN permission NOT granted!");
+//                Toast.makeText(this, "Bluetooth permission required", Toast.LENGTH_SHORT).show();
+//                return;
+//            }
+//        }
+//
+//        // Permission granted, proceed with discovery
+//        if (bluetoothAdapter == null) {
+//            Log.e(TAG, "Bluetooth adapter is NULL");
+//            return;
+//        }
+//
+//        if (!bluetoothAdapter.isEnabled()) {
+//            Log.e(TAG, "Bluetooth not enabled");
+//            Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+//            enableBluetoothLauncher.launch(enableIntent);
+//            return;
+//        }
+//
+//        // Cancel previous discovery
+//        if (bluetoothAdapter.isDiscovering()) {
+//            Log.d(TAG, "Canceling previous discovery");
+//            bluetoothAdapter.cancelDiscovery();
+//
+//            // Wait a bit before starting new discovery
+//            discoveryRetryHandler.postDelayed(this::attemptBluetoothDiscovery, 1000);
+//        } else {
+//            // Start discovery immediately
+//            attemptBluetoothDiscovery();
+//        }
+//
+//        // ✓ NEW: Get PAIRED devices (more reliable on Xiaomi)
+//        try {
+//            Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
+//
+//            if (pairedDevices != null && !pairedDevices.isEmpty()) {
+//                Log.d(TAG, "✓ Found " + pairedDevices.size() + " paired devices");
+//
+//                for (BluetoothDevice device : pairedDevices) {
+//                    Log.d(TAG, "  → " + device.getName() + " (" + device.getAddress() + ")");
+//
+//                    // Auto-connect to first available device
+//                    connectToBluetoothDevice(device);
+//                    break;
+//                }
+//
+//                statusTextView.setText("Status: Found paired devices");
+//            } else {
+//                Log.w(TAG, "No paired devices found");
+//                Log.d(TAG, "Please pair a device first in Bluetooth settings");
+//                statusTextView.setText("Status: No paired devices - pair one first");
+//            }
+//        } catch (SecurityException e) {
+//            Log.e(TAG, "Permission denied: " + e.getMessage());
+//        }
+//
+//        // Start discovery
+//        try {
+//            Log.d(TAG, "DEBUG: About to call startDiscovery()");
+//            boolean started = bluetoothAdapter.startDiscovery();
+//            Log.d(TAG, "DEBUG: startDiscovery() returned: " + started);
+//
+//            if (started) {
+//                Log.d(TAG, "✓ Bluetooth discovery started");
+//                statusTextView.setText("Status: Discovering Bluetooth devices...");
+//            } else {
+//                Log.w(TAG, "Bluetooth discovery failed to start");
+//            }
+//        } catch (SecurityException e) {
+//            Log.e(TAG, "❌ SecurityException caught!");
+//            Log.e(TAG, "Exception message: " + e.getMessage());
+//            Log.e(TAG, "Exception cause: " + e.getCause());
+//            e.printStackTrace();
+//        } catch (Exception e) {
+//            Log.e(TAG, "❌ Unexpected exception: " + e.getClass().getName());
+//            Log.e(TAG, "Message: " + e.getMessage());
+//            e.printStackTrace();
+//        }
+//    }
+    public void startBluetoothDiscovery() {
+        Log.d(TAG, "Starting smart Bluetooth discovery...");
+
+        if (bluetoothAdapter == null) {
+            Log.e(TAG, "Bluetooth adapter not available");
+            return;
+        }
+
+        if (!bluetoothAdapter.isEnabled()) {
+            Log.e(TAG, "Bluetooth not enabled");
+            Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            enableBluetoothLauncher.launch(enableIntent);
+            return;
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // STRATEGY 1: Get Paired Devices (MOST RELIABLE)
+        // ════════════════════════════════════════════════════════════════
+
+        try {
+            Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
+
+            if (pairedDevices != null && !pairedDevices.isEmpty()) {
+                List<BluetoothDevice> dtnDevices = new ArrayList<>();
+                Log.d(TAG, "✓ Found " + pairedDevices.size() + " paired device(s)");
+
+                for (BluetoothDevice device : pairedDevices) {
+                    Log.d(TAG, "  • Paired: " + device.getName() + " (" + device.getAddress() + ")");
+
+                    if (isAndroidPhoneWithDTN(device)) {
+                        Log.d(TAG, "  ✓ Compatible device found: " + device.getName());
+                        dtnDevices.add(device);
+                    } else {
+                        Log.d(TAG, "  ✗ Skipping: " + device.getName() + " (not DTN compatible)");
+                    }
+                }
+                if (!dtnDevices.isEmpty()) {
+                    Log.d(TAG, "Found " + dtnDevices.size() + " DTN-compatible device(s)");
+
+                    // Connect to first compatible device
+                    connectToBluetoothDevice(dtnDevices.get(0));
+
+                    statusTextView.setText("Status: Found " + dtnDevices.size() + " DTN device(s)");
+                    return;
+                } else {
+                    Log.w(TAG, "No DTN-compatible devices found (found headsets/other devices)");
+                    statusTextView.setText("Status: No DTN app on other devices");
+                    Toast.makeText(this, "Run DTN app on another device first", Toast.LENGTH_LONG).show();
+                    return;
+                }
+            }
+        } catch (SecurityException e) {
+            Log.e(TAG, "Permission denied for paired devices: " + e.getMessage());
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // STRATEGY 2: Try BLE Scan (FALLBACK FOR MODERN DEVICES)
+        // ════════════════════════════════════════════════════════════════
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            tryBLEScan();
+            return;
+        }
+
+        Log.w(TAG, "No devices found and BLE scan not supported");
+        statusTextView.setText("Status: No paired devices found");
+    }
+    /**
+     * Check if device is likely an Android phone with DTN app
+     * (not a headset, speaker, watch, etc.)
+     */
+    private boolean isAndroidPhoneWithDTN(BluetoothDevice device) {
+        try {
+            // Get device class to determine type
+            int deviceClass = device.getBluetoothClass().getDeviceClass();
+            int deviceType = device.getType();
+
+            // ✗ Skip audio devices (headsets, speakers)
+            if ((deviceClass & 0x400) != 0) {  // Audio device
+                Log.d(TAG, "  Skipping audio device");
+                return false;
+            }
+
+            // ✗ Skip LE devices (many are not phones)
+            if (deviceType == BluetoothDevice.DEVICE_TYPE_LE) {
+                Log.d(TAG, "  Skipping BLE-only device");
+                return false;
+            }
+
+            // ✓ Accept phones and generic computers
+            if (deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC ||
+                    deviceType == BluetoothDevice.DEVICE_TYPE_DUAL) {
+
+                String name = device.getName();
+
+                // ✓ Accept if has reasonable name
+                if (name != null && !name.isEmpty() && name.length() < 50) {
+                    Log.d(TAG, "  Likely Android phone: " + name);
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking device: " + e.getMessage());
+            return false;
+        }
+    }
+    private void tryBLEScan() {
+        Log.d(TAG, "Attempting BLE scan...");
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            return;
+        }
+
+        try {
+            BluetoothLeScanner scanner = bluetoothAdapter.getBluetoothLeScanner();
+
+            if (scanner == null) {
+                Log.w(TAG, "BLE scanner not available");
+                return;
+            }
+
+            ScanSettings settings = new ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .build();
+
+            ScanCallback callback = new ScanCallback() {
+                @Override
+                public void onScanResult(int callbackType, ScanResult result) {
+                    BluetoothDevice device = result.getDevice();
+                    String deviceName = device.getName() != null ? device.getName() : "Unknown";
+                    Log.d(TAG, "✓ Found (BLE): " + deviceName + " (" + device.getAddress() + ")");
+
+                    // Connect to first found device
+                    connectToBluetoothDevice(device);
+
+                    // Stop scanning after first device
+                    scanner.stopScan(this);
+                }
+            };
+
+            scanner.startScan(null, settings, callback);
+            Log.d(TAG, "✓ BLE scan started");
+            statusTextView.setText("Status: Scanning for BLE devices...");
+
+        } catch (SecurityException e) {
+            Log.e(TAG, "BLE scan permission denied: " + e.getMessage());
+        } catch (Exception e) {
+            Log.e(TAG, "BLE scan error: " + e.getMessage());
+        }
+    }
+
+    private void attemptBluetoothDiscoveryLegacy() {
+        // Attempt discovery
+        try {
+            if (bluetoothAdapter.isDiscovering()) {
+                bluetoothAdapter.cancelDiscovery();
+                Handler h = new Handler(Looper.getMainLooper());
+                h.postDelayed(this::attemptBluetoothDiscoveryLegacy, 500);
+                return;
+            }
+
+            boolean started = bluetoothAdapter.startDiscovery();
+
+            if (started) {
+                Log.d(TAG, "✓ Discovery started (if supported)");
+            } else {
+                Log.w(TAG, "Device doesn't support discovery - use paired devices instead");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Discovery not supported: " + e.getMessage());
+        }
+    }
+
+    // Called when devices found
+    public void updateBluetoothDeviceList(List<BluetoothDevice> devices) {
+        this.bluetoothDevices = devices;
+        Log.d(TAG, "Updated device list: " + devices.size() + " devices");
+        // Update UI here
+    }
+    // Called when discovery finishes
+    public void onBluetoothDiscoveryFinished(List<BluetoothDevice> devices) {
+        Log.d(TAG, "Discovery finished with " + devices.size() + " devices");
+        statusTextView.setText("Found: " + devices.size() + " devices");
+    }
+    // Called when device is paired
+    public void onBluetoothDevicePaired(BluetoothDevice device) {
+        Log.d(TAG, "Device paired: " + device.getName());
+        connectToBluetoothDevice(device);
+    }
+    // Handle Bluetooth state changes
+    public void onBluetoothStateChanged(boolean enabled) {
+        if (enabled) {
+            Log.d(TAG, "Bluetooth is ON - starting discovery");
+            startBluetoothDiscovery();
+        } else {
+            Log.w(TAG, "Bluetooth is OFF");
+        }
+    }
+
+    // Connect to specific device
+    public void connectToBluetoothDevice(BluetoothDevice device) {
+        if (device == null) {
+            Log.e(TAG, "Device is null");
+            return;
+        }
+
+        Log.d(TAG, "Connecting to: " + device.getName() + " (" + device.getAddress() + ")");
+        isBluetoothConnected = false;
+        connectedBluetoothDeviceName = device.getName();
+
+        runOnUiThread(() -> {
+            statusTextView.setText("Status: Connecting to " + device.getName() + "...");
+            statusTextView.setTextColor(0xFFFFC107);  // Yellow/Orange
+        });
+
+        Log.d(TAG, "Stored connected device name: " + connectedBluetoothDeviceName);
+
+        // Close existing connections
+        if (bluetoothClientThread != null && bluetoothClientThread.isAlive()) {
+            bluetoothClientThread.close();
+            bluetoothClientThread = null;
+        }
+
+        if (bluetoothServerThread != null && bluetoothServerThread.isAlive()) {
+            bluetoothServerThread.close();
+            bluetoothServerThread = null;
+        }
+        // Also start server for receiving messages
+        bluetoothServerThread = new BluetoothServerThread(bluetoothAdapter, handler);
+        bluetoothServerThread.start();
+
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            Log.d(TAG, "Now starting client thread...");
+
+            // Then start client (after server is ready)
+            bluetoothClientThread = new BluetoothClientThread(device, handler);
+            bluetoothClientThread.start();
+
+            Log.d(TAG, "✓ Client thread started");
+
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                isBluetoothConnected = true;  // ✓ Mark as connected
+
+                runOnUiThread(() -> {
+                    statusTextView.setText("Status: ✓ Connected to " + device.getName());
+                    statusTextView.setTextColor(0xFF4CAF50);  // Green
+                    Toast.makeText(MainActivity.this, "Connected!", Toast.LENGTH_SHORT).show();
+                });
+            }, 3000);
+
+        }, 1000);  // 1 second delay
+    }
+
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 1) {
+
+        if (requestCode == REQUEST_PERMISSIONS) {
             boolean allGranted = true;
+
             for (int result : grantResults) {
                 if (result != PackageManager.PERMISSION_GRANTED) {
                     allGranted = false;
@@ -1474,13 +1847,18 @@ public class MainActivity extends AppCompatActivity {
             }
 
             if (allGranted) {
-                Toast.makeText(this, "✓ Permissions granted", Toast.LENGTH_SHORT).show();
-                discoverPeers();
+                Log.d(TAG, "✓ All permissions granted");
+                // Retry discovery
+                if (activeTransport == TransportType.BLUETOOTH) {
+                    startBluetoothDiscovery();
+                }
             } else {
-                Toast.makeText(this, "Permissions required", Toast.LENGTH_LONG).show();
+                Log.w(TAG, "Permissions denied");
+                Toast.makeText(this, "Permissions required for Bluetooth", Toast.LENGTH_SHORT).show();
             }
         }
     }
+
 
     @Override
     protected void onResume() {
@@ -1492,11 +1870,11 @@ public class MainActivity extends AppCompatActivity {
             Log.d(TAG, "Wi-Fi Direct receiver registered");
         }
 
-        if (bluetoothBroadcastReceiver != null && bluetoothIntentFilter != null && !isBluetoothReceiverRegistered) { // FIXED
-            registerReceiver(bluetoothBroadcastReceiver, bluetoothIntentFilter); // FIXED
-            isBluetoothReceiverRegistered = true;
-            Log.d(TAG, "Bluetooth receiver registered");
-        }
+//        if (bluetoothBroadcastReceiver != null && bluetoothIntentFilter != null && !isBluetoothReceiverRegistered) { // FIXED
+//            registerReceiver(bluetoothBroadcastReceiver, bluetoothIntentFilter); // FIXED
+//            isBluetoothReceiverRegistered = true;
+//            Log.d(TAG, "Bluetooth receiver registered");
+//        }
 
         discoverPeers();
         loadMessagesFromDatabase();
@@ -1520,41 +1898,219 @@ public class MainActivity extends AppCompatActivity {
         SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
         int itemId = item.getItemId();
 
+        // ════════════════════════════════════════════════════════════════════
+        // ROUTING PROTOCOL SELECTION
+        // ════════════════════════════════════════════════════════════════════
+
         if (itemId == R.id.menu_epidemic) {
             currentProtocol = "EPIDEMIC";
             updateProtocolDisplay();
             Toast.makeText(this, "✓ Switched to Epidemic Routing", Toast.LENGTH_SHORT).show();
+            editor.putString(KEY_ROUTING_PROTOCOL, currentProtocol);
+            editor.apply();
+            return true;
+
         } else if (itemId == R.id.menu_spray_and_wait) {
             currentProtocol = "SPRAY_AND_WAIT";
             updateProtocolDisplay();
             Toast.makeText(this, "✓ Switched to Spray and Wait", Toast.LENGTH_SHORT).show();
-        } else if (itemId == R.id.menu_transport_wifi) {
+            editor.putString(KEY_ROUTING_PROTOCOL, currentProtocol);
+            editor.apply();
+            return true;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // TRANSPORT SELECTION: WI-FI DIRECT
+        // ════════════════════════════════════════════════════════════════════
+
+        if (itemId == R.id.menu_transport_wifi) {
+            Log.d(TAG, "Switching to Wi-Fi Direct...");
+
+            // Stop Bluetooth first
+            stopBluetooth();
+
+            // Switch to Wi-Fi Direct
             if (isWifiDirectAvailable()) {
                 activeTransport = TransportType.WIFI_DIRECT;
                 updateTransportDisplay();
                 Toast.makeText(this, "✓ Switched to Wi-Fi Direct", Toast.LENGTH_SHORT).show();
-                discoverPeers();
+
+                // Start discovery
+                startWifiDirectDiscovery();
+
+                // Save preference
+                editor.putString(TRANSPORT_PREF, TransportType.WIFI_DIRECT.toString());
+                editor.apply();
             } else {
-                Toast.makeText(this, "Wi-Fi Direct not available", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "✗ Wi-Fi Direct not available", Toast.LENGTH_SHORT).show();
             }
-        } else if (itemId == R.id.menu_transport_bluetooth) {
-            if (bluetoothAdapter != null) {
-                activeTransport = TransportType.BLUETOOTH;
-                updateTransportDisplay();
-                Toast.makeText(this, "✓ Switched to Bluetooth", Toast.LENGTH_SHORT).show();
-                discoverPeers();
+            return true;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // TRANSPORT SELECTION: BLUETOOTH
+        // ════════════════════════════════════════════════════════════════════
+
+        if (itemId == R.id.menu_transport_bluetooth) {
+            Log.d(TAG, "Switching to Bluetooth...");
+
+            // Stop Wi-Fi Direct
+            stopWifiDirect();
+
+            // Switch transport
+            activeTransport = TransportType.BLUETOOTH;
+            updateTransportDisplay();
+
+            // Initialize Bluetooth (if not already)
+            if (bluetoothAdapter == null || !isBluetoothReceiverRegistered) {
+                initializeBluetooth();
             } else {
-                Toast.makeText(this, "Bluetooth not available", Toast.LENGTH_SHORT).show();
+                // Bluetooth already initialized, just start discovery
+                startBluetoothDiscovery();
             }
-        } else if (itemId == R.id.menu_view_friends) {
+
+            Toast.makeText(this, "✓ Switched to Bluetooth", Toast.LENGTH_SHORT).show();
+
+            // Save preference
+            editor.putString(TRANSPORT_PREF, TransportType.BLUETOOTH.toString());
+            editor.apply();
+
+            return true;
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // VIEW FRIENDS
+        // ═══════════════════════════════════════════════════════════════════
+
+        if (itemId == R.id.menu_view_friends) {
             showFriendsDialog();
             return true;
         }
 
-        editor.putString(KEY_ROUTING_PROTOCOL, currentProtocol);
-        editor.apply();
-        return true;
+        return super.onOptionsItemSelected(item);
     }
+
+    private void stopWifiDirect() {
+        Log.d(TAG, "Stopping Wi-Fi Direct...");
+
+        // Remove discovery callback
+        if (discoveryHandler != null && discoveryRunnable != null) {
+            discoveryHandler.removeCallbacks(discoveryRunnable);
+        }
+
+        // Cancel discovery
+        if (manager != null && channel != null) {
+            manager.stopPeerDiscovery(channel, new WifiP2pManager.ActionListener() {
+                @Override
+                public void onSuccess() {
+                    Log.d(TAG, "Wi-Fi Direct discovery stopped");
+                }
+
+                @Override
+                public void onFailure(int reason) {
+                    Log.w(TAG, "Failed to stop discovery");
+                }
+            });
+        }
+
+        // Close threads
+        if (serverThread != null && serverThread.isAlive()) {
+            serverThread.close();
+            serverThread = null;
+        }
+
+        if (clientThread != null && clientThread.isAlive()) {
+            clientThread.close();
+            clientThread = null;
+        }
+
+        statusTextView.setText("Status: Switched to Bluetooth");
+        statusTextView.setTextColor(0xFF2196F3);
+    }
+
+    private void startWifiDirectDiscovery() {
+        Log.d(TAG, "Starting Wi-Fi Direct discovery...");
+
+        if (manager == null || channel == null) {
+            Log.e(TAG, "Manager or channel is null");
+            return;
+        }
+
+        manager.discoverPeers(channel, new WifiP2pManager.ActionListener() {
+            @Override
+            public void onSuccess() {
+                Log.d(TAG, "✓ Wi-Fi Direct discovery started");
+                statusTextView.setText("Status: Discovering (Wi-Fi Direct)...");
+                statusTextView.setTextColor(0xFFFFC107);
+            }
+
+            @Override
+            public void onFailure(int reason) {
+                Log.e(TAG, "Wi-Fi Direct discovery failed: " + reason);
+                statusTextView.setText("Status: Discovery Failed");
+            }
+        });
+    }
+
+    private void stopBluetooth() {
+        Log.d(TAG, "Stopping Bluetooth...");
+
+        if (bluetoothAdapter != null && bluetoothAdapter.isDiscovering()) {
+            bluetoothAdapter.cancelDiscovery();
+        }
+
+        if (bluetoothClientThread != null && bluetoothClientThread.isAlive()) {
+            bluetoothClientThread.close();
+            bluetoothClientThread = null;
+        }
+
+        if (bluetoothServerThread != null && bluetoothServerThread.isAlive()) {
+            bluetoothServerThread.close();
+            bluetoothServerThread = null;
+        }
+
+        statusTextView.setText("Status: Switched to Wi-Fi Direct");
+        statusTextView.setTextColor(0xFF4CAF50);
+    }
+    private void attemptBluetoothDiscovery() {
+        try {
+            boolean started = bluetoothAdapter.startDiscovery();
+
+            if (started) {
+                Log.d(TAG, "✓✓✓ Bluetooth discovery started ✓✓✓");
+                statusTextView.setText("Status: Discovering Bluetooth devices...");
+            } else {
+                Log.w(TAG, "startDiscovery() returned false - will retry");
+
+                // Retry after 20 seconds
+                discoveryRetryHandler.postDelayed(() -> {
+                    Log.d(TAG, "Retrying Bluetooth discovery...");
+                    attemptBluetoothDiscovery();
+                }, 20000);
+            }
+        } catch (SecurityException e) {
+            Log.e(TAG, "❌ SecurityException: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Unexpected exception: " + e.getClass().getName());
+            e.printStackTrace();
+        }
+    }
+
+//    @Override
+//    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+//        super.onActivityResult(requestCode, resultCode, data);
+//
+//        if (requestCode == REQUEST_ENABLE_BT) {
+//            if (resultCode == RESULT_OK) {
+//                Log.d(TAG, "✓ Bluetooth enabled");
+//                startBluetoothDiscovery();
+//            } else {
+//                Log.w(TAG, "User declined to enable Bluetooth");
+//                Toast.makeText(this, "Bluetooth is required", Toast.LENGTH_SHORT).show();
+//            }
+//        }
+//    }
 
     private void showFriendsDialog() {
         executor.execute(() -> {
@@ -1581,112 +2137,21 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-//    @RequiresApi(api = Build.VERSION_CODES.Q)
-//    public void setOwnDeviceName(String deviceName) {
-//        // FIXED: Simplified - just log the name
-//        Log.d(TAG, "Device name broadcast received: " + deviceName);
-//
-//        // Device ID will be refreshed in connectionInfoListener after connection established
-//        Log.d(TAG, "Current Device ID: " + ownDeviceId);
-//    }
-
-    /**
-     * FIXED: Synchronously refresh device ID after connection
-     * Blocks until device info is retrieved
-     */
-//    public void refreshDeviceIdAfterConnection() {
-//        Log.d(TAG, "=== Refreshing Device ID ===");
-//
-//        if (activeTransport == TransportType.WIFI_DIRECT) {
-//            if (manager == null || channel == null) {
-//                Log.w(TAG, "Manager or channel is null");
-//                return;
-//            }
-//
-//            // Check permissions
-//            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-//                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
-//                        != PackageManager.PERMISSION_GRANTED) {
-//                    Log.w(TAG, "Missing NEARBY_WIFI_DEVICES permission");
-//                    return;
-//                }
-//            } else {
-//                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-//                        != PackageManager.PERMISSION_GRANTED) {
-//                    Log.w(TAG, "Missing ACCESS_FINE_LOCATION permission");
-//                    return;
-//                }
-//            }
-//
-//            try {
-//                // Use a callback holder to capture the result
-//                final WifiP2pDevice[] deviceHolder = new WifiP2pDevice[1];
-//                final Object lock = new Object();
-//
-//                manager.requestDeviceInfo(channel, device -> {
-//                    synchronized (lock) {
-//                        deviceHolder[0] = device;
-//                        lock.notifyAll(); // Wake up waiting thread
-//                    }
-//                });
-//
-//                // Wait for callback with timeout
-//                synchronized (lock) {
-//                    try {
-//                        lock.wait(2000); // Wait max 2 seconds
-//                    } catch (InterruptedException e) {
-//                        Log.e(TAG, "Interrupted while waiting for device info", e);
-//                        Thread.currentThread().interrupt();
-//                    }
-//                }
-//
-//                if (deviceHolder[0] != null && deviceHolder[0].deviceAddress != null) {
-//                    String newDeviceId = deviceHolder[0].deviceAddress;
-//                    if (!newDeviceId.equals(ownDeviceId)) {
-//                        Log.d(TAG, "Device ID changed: " + ownDeviceId + " → " + newDeviceId);
-//                        ownDeviceId = newDeviceId;
-//                    }
-//                    Log.d(TAG, "✅ Device ID confirmed (Wi-Fi Direct): " + ownDeviceId);
-//                } else {
-//                    Log.w(TAG, "Device info returned null");
-//                }
-//            } catch (SecurityException e) {
-//                Log.e(TAG, "SecurityException getting device info", e);
-//            }
-//        } else if (activeTransport == TransportType.BLUETOOTH) {
-//            if (bluetoothAdapter == null) {
-//                Log.w(TAG, "Bluetooth adapter is null");
-//                return;
-//            }
-//
-//            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-//                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-//                        != PackageManager.PERMISSION_GRANTED) {
-//                    Log.w(TAG, "Missing BLUETOOTH_CONNECT permission");
-//                    return;
-//                }
-//            }
-//
-//            try {
-//                String bluetoothId = bluetoothAdapter.getAddress();
-//                if (bluetoothId != null) {
-//                    ownDeviceId = bluetoothId;
-//                    Log.d(TAG, "✅ Device ID set (Bluetooth): " + ownDeviceId);
-//                }
-//            } catch (SecurityException e) {
-//                Log.e(TAG, "SecurityException getting Bluetooth address", e);
-//            }
-//        }
-//
-//        Log.d(TAG, "Final Device ID after refresh: " + ownDeviceId);
-//    }
-
+    private ActivityResultLauncher<Intent> enableBluetoothLauncher =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() == RESULT_OK) {
+                    Log.d(TAG, "✓ Bluetooth enabled by user");
+                    startBluetoothDiscovery();
+                } else {
+                    Log.w(TAG, "User declined to enable Bluetooth");
+                    Toast.makeText(this, "Bluetooth required", Toast.LENGTH_SHORT).show();
+                }
+            });
 
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-
         // Shutdown threads
         if (serverThread != null && serverThread.isAlive()) {
             serverThread.close();
@@ -1712,16 +2177,28 @@ public class MainActivity extends AppCompatActivity {
 
         // Unregister receivers
         try {
-            if (isWifiDirectReceiverRegistered) {
+            if (isWifiDirectReceiverRegistered && wifiDirectBroadcastReceiver != null) {
                 unregisterReceiver(wifiDirectBroadcastReceiver);
                 isWifiDirectReceiverRegistered = false;
             }
-            if (isBluetoothReceiverRegistered) {
-                unregisterReceiver(bluetoothBroadcastReceiver);
-                isBluetoothReceiverRegistered = false;
-            }
+//            if (isBluetoothReceiverRegistered && bluetoothBroadcastReceiver != null) {
+//                unregisterReceiver(bluetoothBroadcastReceiver);
+//                isBluetoothReceiverRegistered = false;
+//            }
         } catch (IllegalArgumentException e) {
             Log.e(TAG, "Error unregistering receivers", e);
+        }
+        // shut bluetooth
+        if (bluetoothReceiver != null) {
+            unregisterReceiver(bluetoothReceiver);
+        }
+
+        if (bluetoothClientThread != null) {
+            bluetoothClientThread.close();
+        }
+
+        if (bluetoothServerThread != null) {
+            bluetoothServerThread.close();
         }
 
         if (executor != null && !executor.isShutdown()) {
@@ -1731,78 +2208,6 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "MainActivity destroyed - cleanup complete");
     }
 
-    /**
-     * Initialize device ID synchronously BEFORE connections
-     * Gets the actual MAC address for the active transport
-     */
-    private void initializeDeviceIdSync() {
-        Log.d(TAG, "Initializing device ID for transport: " + activeTransport);
 
-        if (activeTransport == TransportType.WIFI_DIRECT) {
-            if (manager != null && channel != null) {
-                try {
-                    // For Wi-Fi Direct, request device info
-                    final Object lock = new Object();
-                    final WifiP2pDevice[] deviceHolder = new WifiP2pDevice[1];
-
-                    manager.requestDeviceInfo(channel, device -> {
-                        synchronized (lock) {
-                            deviceHolder[0] = device;
-                            lock.notifyAll();
-                        }
-                    });
-
-                    // Wait for result with timeout
-                    synchronized (lock) {
-                        try {
-                            lock.wait(2000); // Wait max 2 seconds
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }
-
-                    if (deviceHolder[0] != null && deviceHolder[0].deviceAddress != null) {
-                        ownDeviceId = deviceHolder[0].deviceAddress;
-                        Log.d(TAG, "✅ Device ID initialized (Wi-Fi Direct): " + ownDeviceId);
-                    } else {
-                        Log.w(TAG, "⚠️ Could not get Wi-Fi Direct device info, using temporary ID");
-                        ownDeviceId = UUID.randomUUID().toString();
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Error initializing Wi-Fi Direct device ID", e);
-                    ownDeviceId = UUID.randomUUID().toString();
-                }
-            } else {
-                Log.w(TAG, "Manager or channel is null");
-                ownDeviceId = UUID.randomUUID().toString();
-            }
-        } else if (activeTransport == TransportType.BLUETOOTH) {
-            if (bluetoothAdapter != null) {
-                try {
-                    ownDeviceId = bluetoothAdapter.getAddress();
-                    if (ownDeviceId != null && !ownDeviceId.isEmpty()) {
-                        Log.d(TAG, "✅ Device ID initialized (Bluetooth): " + ownDeviceId);
-                    } else {
-                        Log.w(TAG, "Bluetooth address is empty, using temporary ID");
-                        ownDeviceId = UUID.randomUUID().toString();
-                    }
-                } catch (SecurityException e) {
-                    Log.e(TAG, "SecurityException getting Bluetooth address", e);
-                    ownDeviceId = UUID.randomUUID().toString();
-                } catch (Exception e) {
-                    Log.e(TAG, "Error getting Bluetooth address", e);
-                    ownDeviceId = UUID.randomUUID().toString();
-                }
-            } else {
-                Log.w(TAG, "Bluetooth adapter not available");
-                ownDeviceId = UUID.randomUUID().toString();
-            }
-        } else {
-            Log.w(TAG, "Unknown transport type");
-            ownDeviceId = UUID.randomUUID().toString();
-        }
-
-        Log.d(TAG, "Final ownDeviceId: " + ownDeviceId);
-    }
 
 }

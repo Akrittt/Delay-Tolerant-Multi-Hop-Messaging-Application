@@ -171,7 +171,7 @@ public class ClientThread extends Thread {
     }
 
     /**
-     * FIXED: Queue message instead of spawning thread
+     * Queue message instead of spawning thread
      */
     public void write(Message message) {
         if (!isConnected()) {
