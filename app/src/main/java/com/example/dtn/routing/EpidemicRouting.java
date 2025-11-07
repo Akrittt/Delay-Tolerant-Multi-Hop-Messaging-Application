@@ -1,11 +1,17 @@
 package com.example.dtn.routing;
 
+import android.Manifest;
+import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.util.Log;
 
+import androidx.annotation.RequiresPermission;
+
 import com.example.dtn.data.Message;
 import com.example.dtn.data.MessageDao;
+import com.example.dtn.network.BluetoothClientThread;
+import com.example.dtn.network.BluetoothServerThread;
 import com.example.dtn.network.ClientThread;
 import com.example.dtn.network.ServerThread;
 import com.example.dtn.utils.Logger;
@@ -58,7 +64,7 @@ public class EpidemicRouting implements RoutingProtocol {
         String peerId = peer.deviceAddress != null ? peer.deviceAddress : peer.deviceName;
 
         for (Message message : messagesToForward) {
-            // FIXED: Use consistent device identifier (MAC address preferred)
+            // Use consistent device identifier
             if (message.source_id != null) {
                 String sourceId = message.source_id;
                 if (sourceId.equals(peerId)) {
@@ -67,13 +73,13 @@ public class EpidemicRouting implements RoutingProtocol {
                 }
             }
 
-            // FIXED: Check hop count limit
+            // Check hop count limit
             if (message.hop_count >= MAX_HOPS) {
                 Log.d(TAG, "Message reached max hops: " + message.message_id);
                 continue;
             }
 
-            // FIXED: Check if peer already has this message
+            // Check if peer already has this message
             if (hasPeerSeenMessage(peerId, message.message_id)) {
                 Log.d(TAG, "Peer already has message: " + message.message_id);
                 continue;
@@ -89,7 +95,7 @@ public class EpidemicRouting implements RoutingProtocol {
     }
 
     /**
-     * FIXED: Forward a single message
+     *  Forward a single message
      */
     private void forwardMessage(Message message, WifiP2pDevice peer, String peerId,
                                 ServerThread serverThread, ClientThread clientThread) {
@@ -118,8 +124,84 @@ public class EpidemicRouting implements RoutingProtocol {
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    public void forwardMessagesBluetooth(List<Message> messagesToForward, BluetoothDevice peer,
+                                         BluetoothServerThread serverThread,
+                                         BluetoothClientThread clientThread) {
+
+        if (peer == null || peer.getName() == null) {
+            Log.e(TAG, "Invalid Bluetooth peer");
+            return;
+        }
+
+        if (messagesToForward == null || messagesToForward.isEmpty()) {
+            Log.d(TAG, "No messages to forward");
+            return;
+        }
+
+        String peerId = peer.getName();  // Use Bluetooth device name
+        String peerAddress = peer.getAddress();
+
+        for (Message message : messagesToForward) {
+            // Skip if from this peer
+            if (message.source_id != null &&
+                    (message.source_id.equals(peerId) || message.source_id.equals(peerAddress))) {
+                Log.d(TAG, "Skipping message from sender: " + message.message_id);
+                continue;
+            }
+
+            // Check hop count
+            if (message.hop_count >= MAX_HOPS) {
+                Log.d(TAG, "Message reached max hops: " + message.message_id);
+                continue;
+            }
+
+            // Check if peer already has message
+            if (hasPeerSeenMessage(peerId, message.message_id)) {
+                Log.d(TAG, "Peer already has message: " + message.message_id);
+                continue;
+            }
+
+            // Forward via Bluetooth
+            forwardMessageBluetooth(message, peer, peerId, serverThread, clientThread);
+            recordMessageForPeer(peerId, message.message_id);
+        }
+
+        Log.d(TAG, String.format(Locale.US, "Epidemic: Forwarded %d messages to %s (Bluetooth)",
+                messagesToForward.size(), peerId));
+    }
+
+    private void forwardMessageBluetooth(Message message, BluetoothDevice peer, String peerId,
+                                         BluetoothServerThread serverThread,
+                                         BluetoothClientThread clientThread) {
+        message.hop_count++;
+
+        logger.logEvent(String.format(Locale.US,
+                "EVENT=MESSAGE_FORWARDED | PROTOCOL=EPIDEMIC | TRANSPORT=BLUETOOTH | MSG_ID=%s | FROM=%s | TO=%s | HOPS=%d",
+                message.message_id, ownDeviceId, peerId, message.hop_count));
+
+        boolean sent = false;
+
+        if (clientThread != null && clientThread.isAlive()) {
+            clientThread.write(message);
+            sent = true;
+            Log.d(TAG, String.format("Sent message %s via Bluetooth ClientThread", message.message_id));
+        } else if (serverThread != null && serverThread.isAlive()) {
+            serverThread.write(message);
+            sent = true;
+            Log.d(TAG, String.format("Sent message %s via Bluetooth ServerThread", message.message_id));
+        }
+
+        if (!sent) {
+            Log.e(TAG, "Failed to send message via Bluetooth: " + message.message_id);
+            logger.logEvent(String.format(Locale.US,
+                    "EVENT=SEND_FAILED | TRANSPORT=BLUETOOTH | MSG_ID=%s | REASON=NO_ACTIVE_THREAD",
+                    message.message_id));
+        }
+    }
+
     /**
-     * FIXED: Check if peer has seen this message
+     * Check if peer has seen this message
      */
     private boolean hasPeerSeenMessage(String peerId, String messageId) {
         synchronized (historyLock) {
@@ -129,7 +211,7 @@ public class EpidemicRouting implements RoutingProtocol {
     }
 
     /**
-     * FIXED: Record message as forwarded to peer
+     * Record message as forwarded to peer
      */
     private void recordMessageForPeer(String peerId, String messageId) {
         synchronized (historyLock) {
@@ -145,6 +227,10 @@ public class EpidemicRouting implements RoutingProtocol {
             peerMessageHistory.remove(peerId);
             Log.d(TAG, "Cleared history for peer: " + peerId);
         }
+    }
+
+    public List<Message> getMessagesToForward() {
+        return messageDao.getNonExpiredMessages(System.currentTimeMillis());
     }
 
     /**

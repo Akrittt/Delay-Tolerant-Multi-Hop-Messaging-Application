@@ -188,14 +188,6 @@ public class MainActivity extends AppCompatActivity {
         String savedTransport = prefs.getString(TRANSPORT_PREF, "WIFI_DIRECT");
         activeTransport = TransportType.valueOf(savedTransport); // Convert string to ENUM type
 
-        // Try to load previously saved device ID
-//        String savedDeviceId = prefs.getString("SAVED_DEVICE_ID", null);
-//        if (savedDeviceId != null && !savedDeviceId.isEmpty()) {
-//            ownDeviceId = savedDeviceId;
-//            Log.d(TAG, "✅ Loaded MAC from storage: " + ownDeviceId);
-//        } else {
-//            Log.d(TAG, "MAC not available yet, will be set on Wi-Fi Direct connection");
-//        }
 
         requestPermissions(); // Asks user for runtime permissions (Android 6+)
         initializeUI(); // Calls findViewById() to link Java variables to XML layout elements
@@ -203,20 +195,20 @@ public class MainActivity extends AppCompatActivity {
         updateTransportDisplay(); // Updates the UI to show current transport
         setupPrioritySpinner(); // Initializes the priority dropdown menu
 
+
         initializeDatabase(); // Creates/opens Room database
         logger = Logger.getInstance(getApplicationContext()); // All threads can log to same file
         initializeHandler(); // Creates a Handler for message passing between threads
         setListeners(); // Attaches click listeners to UI buttons
 
+
         // Initialize both transports
         initializeWifiDirect(); // Sets up Wi-Fi Direct
         initializeBluetooth();// sets up bluetooth
 
+
         // Chooses which transport to use (Wi-Fi Direct or Bluetooth)
         selectBestTransport();
-
-        // Gets the unique MAC address for this device
-//        initializeDeviceIdSync();
         Log.d(TAG, "onCreate() completed. Initial ownDeviceId: " + ownDeviceId);
 
         discoveryRunnable = () -> {
@@ -264,9 +256,88 @@ public class MainActivity extends AppCompatActivity {
             discoveryHandler.postDelayed(discoveryRunnable, 10000);
         };
 
-// Start discovery immediately
+        // Start discovery immediately
         discoveryHandler.post(discoveryRunnable);
 
+    }
+    //  REQUEST ALL THE PERMISSIONS REQUIRED
+    private void requestPermissions() {
+        Log.d(TAG, "Checking and requesting permissions...");
+
+        List<String> permissionsToRequest = new ArrayList<>();
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 1: Location (needed for both Wi-Fi Direct and Bluetooth)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (ActivityCompat.checkSelfPermission(this,
+                Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            Log.d(TAG, "Need ACCESS_FINE_LOCATION");
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 2: Bluetooth Permissions (Android 12+)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN);
+                Log.d(TAG, "Need BLUETOOTH_SCAN");
+            }
+
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT);
+                Log.d(TAG, "Need BLUETOOTH_CONNECT");
+            }
+
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_ADVERTISE);
+                Log.d(TAG, "Need BLUETOOTH_ADVERTISE");
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 3: Wi-Fi Direct (Android 13+)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+                Log.d(TAG, "Need NEARBY_WIFI_DEVICES");
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 4: External Storage (Android 12 and below)
+        // ════════════════════════════════════════════════════════════════════
+
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+            if (ActivityCompat.checkSelfPermission(this,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+                Log.d(TAG, "Need WRITE_EXTERNAL_STORAGE");
+            }
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // STEP 5: Request all missing permissions
+        // ════════════════════════════════════════════════════════════════════
+
+        if (!permissionsToRequest.isEmpty()) {
+            Log.d(TAG, "💬 Requesting " + permissionsToRequest.size() + " permissions");
+            ActivityCompat.requestPermissions(this,
+                    permissionsToRequest.toArray(new String[0]),
+                    REQUEST_PERMISSIONS);
+        } else {
+            Log.d(TAG, "✓ All permissions already granted");
+            // All permissions already granted, start discovery
+            discoverPeers();
+        }
     }
 
     private void initializeUI() {
@@ -320,20 +391,24 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeWifiDirect() {
-        manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE); // 1. Gets WifiP2pManager from system
+        // 1. Gets WifiP2pManager from system
+        manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
         if (manager == null) {
             Log.w(TAG, "Wi-Fi Direct not supported");
             return;
         }
 
-        channel = manager.initialize(this, getMainLooper(), null); // 2. Initializes Channel for communication
+        // 2. Initializes Channel for communication
+        channel = manager.initialize(this, getMainLooper(), null);
         if (channel == null) {
             Log.e(TAG, "Failed to initialize Wi-Fi Direct channel");
             return;
         }
 
-        wifiDirectBroadcastReceiver = new WifiDirectBroadcastReceiver(manager, channel, this); // 3. Creates WifiDirectBroadcastReceiver
-        wifiDirectIntentFilter = new IntentFilter(); // 4. Sets up intent filters for broadcasts
+        // 3. Creates WifiDirectBroadcastReceiver
+        wifiDirectBroadcastReceiver = new WifiDirectBroadcastReceiver(manager, channel, this);
+        // 4. Sets up intent filters for broadcasts
+        wifiDirectIntentFilter = new IntentFilter();
         wifiDirectIntentFilter.addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION);
         wifiDirectIntentFilter.addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION);
         wifiDirectIntentFilter.addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION);
@@ -663,7 +738,6 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-
     private String getConnectionFailureReason(int reason) {
         switch (reason) {
             case WifiP2pManager.ERROR:
@@ -898,30 +972,55 @@ public class MainActivity extends AppCompatActivity {
         return null;
     }
 
-    private void triggerForwardingLogic(final WifiP2pDevice peer) {
+    private void triggerForwardingLogic(Object peer) {
         executor.execute(() -> {
             try {
-                //find friend in database
-                final Friend connectedFriend = friendDao.getFriendById(peer.deviceAddress);
+                // Determine peer type and get ID
+                String peerId;
+                String peerAddress = null;
+                boolean isBluetoothPeer = false;
+
+                if (peer instanceof WifiP2pDevice) {
+                    // Wi-Fi Direct
+                    WifiP2pDevice wifiPeer = (WifiP2pDevice) peer;
+                    peerId = wifiPeer.deviceAddress;
+                    peerAddress = wifiPeer.deviceAddress;
+                    Log.d(TAG, "Forwarding to Wi-Fi Direct peer: " + peerId);
+
+                } else if (peer instanceof BluetoothDevice) {
+                    // Bluetooth
+                    BluetoothDevice btPeer = (BluetoothDevice) peer;
+                    peerId = btPeer.getName();
+                    peerAddress = btPeer.getAddress();
+                    isBluetoothPeer = true;
+                    Log.d(TAG, "Forwarding to Bluetooth peer: " + peerId);
+
+                } else {
+                    Log.e(TAG, "Unknown peer type");
+                    return;
+                }
+
+                // Record friend encounter
+                final Friend connectedFriend = friendDao.getFriendById(peerId);
                 if (connectedFriend != null) {
-                    // record when we saw this device
                     connectedFriend.lastEncounteredTimestamp = System.currentTimeMillis();
                     friendDao.update(connectedFriend);
                 }
 
-                //get all non-expired messages
+
+                // Get all non-expired messages
                 final List<Message> allMessages = messageDao.getNonExpiredMessages(System.currentTimeMillis());
                 final List<Message> messagesToForward = new ArrayList<>();
 
-                //prevents infinite loop , use contact history and don't forward to everyone
+                // Filter messages using contact history
                 for (Message message : allMessages) {
-                    // if message is for this device, send it !!!
-                    if (peer.deviceAddress.equals(message.destination_id)) {
+                    // If message is FOR this device, send it
+                    if (peerId.equals(message.destination_id)) {
                         messagesToForward.add(message);
                         continue;
                     }
 
-                    // only forward if connected peer recently saw destination
+                    // Only forward if connected peer recently saw destination
                     Friend destinationFriend = friendDao.getFriendById(message.destination_id);
                     if (destinationFriend != null && connectedFriend != null) {
                         if (connectedFriend.lastEncounteredTimestamp > destinationFriend.lastEncounteredTimestamp) {
@@ -930,15 +1029,13 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
 
-                // sort messages
+                // Sort messages by priority and TTL
                 Collections.sort(messagesToForward, (m1, m2) -> {
-                    // sort by priority
                     int priorityCompare = Integer.compare(m2.priority, m1.priority);
-                    // sort by TTL
                     return priorityCompare != 0 ? priorityCompare : Long.compare(m2.ttl_timestamp, m1.ttl_timestamp);
                 });
 
-                // Pass messageDao to routing protocols
+                // Initialize routing protocol
                 if (currentProtocol.equals("SPRAY_AND_WAIT")) {
                     activeRoutingProtocol = new SprayAndWaitRouting(getApplicationContext(), ownDeviceId, messageDao);
                     sprayAndWaitRouting = (SprayAndWaitRouting) activeRoutingProtocol;
@@ -947,16 +1044,43 @@ public class MainActivity extends AppCompatActivity {
                     epidemicRouting = (EpidemicRouting) activeRoutingProtocol;
                 }
 
-                // actual forward message
-                // check if ready to forward
+                // Forward messages based on transport type
                 if (activeRoutingProtocol != null && !messagesToForward.isEmpty()) {
-                    activeRoutingProtocol.forwardMessages(messagesToForward, peer, serverThread, clientThread);
+                    if (isBluetoothPeer) {
+                        // Bluetooth forwarding
+                        BluetoothDevice btPeer = (BluetoothDevice) peer;
+
+                        if (currentProtocol.equals("EPIDEMIC")) {
+                            epidemicRouting.forwardMessagesBluetooth(messagesToForward, btPeer,
+                                    bluetoothServerThread, bluetoothClientThread);
+                        } else if (currentProtocol.equals("SPRAY_AND_WAIT")) {
+                            sprayAndWaitRouting.forwardMessagesBluetooth(messagesToForward, btPeer,
+                                    bluetoothServerThread, bluetoothClientThread);
+                        }
+
+                        Log.d(TAG, "✓ Forwarded " + messagesToForward.size() + " messages via Bluetooth");
+
+                    } else {
+                        // Wi-Fi Direct forwarding
+                        WifiP2pDevice wifiPeer = (WifiP2pDevice) peer;
+
+                        activeRoutingProtocol.forwardMessages(messagesToForward, wifiPeer,
+                                serverThread, clientThread);
+
+                        Log.d(TAG, "✓ Forwarded " + messagesToForward.size() + " messages via Wi-Fi Direct");
+                    }
+                } else {
+                    Log.d(TAG, "No messages to forward or protocol not initialized");
                 }
+
             } catch (Exception e) {
                 Log.e(TAG, "Error in forwarding logic", e);
+                e.printStackTrace();
             }
         });
     }
+
+
 
     private void loadMessagesFromDatabase() {
         executor.execute(() -> {
@@ -1370,85 +1494,6 @@ public class MainActivity extends AppCompatActivity {
         statusTextView.setTextColor(0xFFFFC107);
     }
 
-    private void requestPermissions() {
-        Log.d(TAG, "Checking and requesting permissions...");
-
-        List<String> permissionsToRequest = new ArrayList<>();
-
-        // ════════════════════════════════════════════════════════════════════
-        // STEP 1: Location (needed for both Wi-Fi Direct and Bluetooth)
-        // ════════════════════════════════════════════════════════════════════
-
-        if (ActivityCompat.checkSelfPermission(this,
-                Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION);
-            Log.d(TAG, "Need ACCESS_FINE_LOCATION");
-        }
-
-        // ════════════════════════════════════════════════════════════════════
-        // STEP 2: Bluetooth Permissions (Android 12+)
-        // ════════════════════════════════════════════════════════════════════
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ActivityCompat.checkSelfPermission(this,
-                    Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN);
-                Log.d(TAG, "Need BLUETOOTH_SCAN");
-            }
-
-            if (ActivityCompat.checkSelfPermission(this,
-                    Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT);
-                Log.d(TAG, "Need BLUETOOTH_CONNECT");
-            }
-
-            if (ActivityCompat.checkSelfPermission(this,
-                    Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.BLUETOOTH_ADVERTISE);
-                Log.d(TAG, "Need BLUETOOTH_ADVERTISE");
-            }
-        }
-
-        // ════════════════════════════════════════════════════════════════════
-        // STEP 3: Wi-Fi Direct (Android 13+)
-        // ════════════════════════════════════════════════════════════════════
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ActivityCompat.checkSelfPermission(this,
-                    Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES);
-                Log.d(TAG, "Need NEARBY_WIFI_DEVICES");
-            }
-        }
-
-        // ════════════════════════════════════════════════════════════════════
-        // STEP 4: External Storage (Android 12 and below)
-        // ════════════════════════════════════════════════════════════════════
-
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            if (ActivityCompat.checkSelfPermission(this,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                permissionsToRequest.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
-                Log.d(TAG, "Need WRITE_EXTERNAL_STORAGE");
-            }
-        }
-
-        // ════════════════════════════════════════════════════════════════════
-        // STEP 5: Request all missing permissions
-        // ════════════════════════════════════════════════════════════════════
-
-        if (!permissionsToRequest.isEmpty()) {
-            Log.d(TAG, "💬 Requesting " + permissionsToRequest.size() + " permissions");
-            ActivityCompat.requestPermissions(this,
-                    permissionsToRequest.toArray(new String[0]),
-                    REQUEST_PERMISSIONS);
-        } else {
-            Log.d(TAG, "✓ All permissions already granted");
-            // All permissions already granted, start discovery
-            discoverPeers();
-        }
-    }
-
     private void initializeBluetooth() {
         Log.d(TAG, "Initializing Bluetooth...");
 
@@ -1480,103 +1525,10 @@ public class MainActivity extends AppCompatActivity {
             Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
             enableBluetoothLauncher.launch(enableIntent);
         } else {
-            Log.d(TAG, "✓ Bluetooth already enabled");
+            Log.d(TAG, "✓ Bluetooth enabled");
         }
     }
-    // Start Bluetooth discovery
-//    public void startBluetoothDiscovery() {
-//        Log.d(TAG, "Starting Bluetooth discovery...");
-//
-//        //  Check all prerequisites ===
-//        Log.d(TAG, "DEBUG: bluetoothAdapter = " + bluetoothAdapter);
-//        Log.d(TAG, "DEBUG: isEnabled = " + (bluetoothAdapter != null ? bluetoothAdapter.isEnabled() : "NULL"));
-//
-//        // Check permissions
-//        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-//            boolean hasScan = ActivityCompat.checkSelfPermission(this,
-//                    Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
-//            Log.d(TAG, "DEBUG: BLUETOOTH_SCAN permission = " + hasScan);
-//
-//            if (!hasScan) {
-//                Log.e(TAG, "❌ BLUETOOTH_SCAN permission NOT granted!");
-//                Toast.makeText(this, "Bluetooth permission required", Toast.LENGTH_SHORT).show();
-//                return;
-//            }
-//        }
-//
-//        // Permission granted, proceed with discovery
-//        if (bluetoothAdapter == null) {
-//            Log.e(TAG, "Bluetooth adapter is NULL");
-//            return;
-//        }
-//
-//        if (!bluetoothAdapter.isEnabled()) {
-//            Log.e(TAG, "Bluetooth not enabled");
-//            Intent enableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-//            enableBluetoothLauncher.launch(enableIntent);
-//            return;
-//        }
-//
-//        // Cancel previous discovery
-//        if (bluetoothAdapter.isDiscovering()) {
-//            Log.d(TAG, "Canceling previous discovery");
-//            bluetoothAdapter.cancelDiscovery();
-//
-//            // Wait a bit before starting new discovery
-//            discoveryRetryHandler.postDelayed(this::attemptBluetoothDiscovery, 1000);
-//        } else {
-//            // Start discovery immediately
-//            attemptBluetoothDiscovery();
-//        }
-//
-//        // ✓ NEW: Get PAIRED devices (more reliable on Xiaomi)
-//        try {
-//            Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
-//
-//            if (pairedDevices != null && !pairedDevices.isEmpty()) {
-//                Log.d(TAG, "✓ Found " + pairedDevices.size() + " paired devices");
-//
-//                for (BluetoothDevice device : pairedDevices) {
-//                    Log.d(TAG, "  → " + device.getName() + " (" + device.getAddress() + ")");
-//
-//                    // Auto-connect to first available device
-//                    connectToBluetoothDevice(device);
-//                    break;
-//                }
-//
-//                statusTextView.setText("Status: Found paired devices");
-//            } else {
-//                Log.w(TAG, "No paired devices found");
-//                Log.d(TAG, "Please pair a device first in Bluetooth settings");
-//                statusTextView.setText("Status: No paired devices - pair one first");
-//            }
-//        } catch (SecurityException e) {
-//            Log.e(TAG, "Permission denied: " + e.getMessage());
-//        }
-//
-//        // Start discovery
-//        try {
-//            Log.d(TAG, "DEBUG: About to call startDiscovery()");
-//            boolean started = bluetoothAdapter.startDiscovery();
-//            Log.d(TAG, "DEBUG: startDiscovery() returned: " + started);
-//
-//            if (started) {
-//                Log.d(TAG, "✓ Bluetooth discovery started");
-//                statusTextView.setText("Status: Discovering Bluetooth devices...");
-//            } else {
-//                Log.w(TAG, "Bluetooth discovery failed to start");
-//            }
-//        } catch (SecurityException e) {
-//            Log.e(TAG, "❌ SecurityException caught!");
-//            Log.e(TAG, "Exception message: " + e.getMessage());
-//            Log.e(TAG, "Exception cause: " + e.getCause());
-//            e.printStackTrace();
-//        } catch (Exception e) {
-//            Log.e(TAG, "❌ Unexpected exception: " + e.getClass().getName());
-//            Log.e(TAG, "Message: " + e.getMessage());
-//            e.printStackTrace();
-//        }
-//    }
+
     public void startBluetoothDiscovery() {
         Log.d(TAG, "Starting smart Bluetooth discovery...");
 
@@ -1638,7 +1590,10 @@ public class MainActivity extends AppCompatActivity {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             tryBLEScan();
-            return;
+        }else{
+            Log.w(TAG, "No devices found and BLE not supported");
+            statusTextView.setText("Status: No DTN devices found");
+            Toast.makeText(this, "No DTN devices found - pair a device first", Toast.LENGTH_LONG).show();
         }
 
         Log.w(TAG, "No devices found and BLE scan not supported");
@@ -1829,7 +1784,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             }, 3000);
 
-        }, 1000);  // 1 second delay
+        }, 1000);
     }
 
     @Override
