@@ -5,6 +5,11 @@ import android.annotation.SuppressLint;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.AdvertiseCallback;
+import android.bluetooth.le.AdvertiseData;
+import android.bluetooth.le.AdvertiseSettings;
+import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
@@ -23,6 +28,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.InputType;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -101,6 +107,7 @@ public class MainActivity extends AppCompatActivity {
     String[] deviceNameArray;
     WifiP2pDevice[] deviceArray;
     private boolean isWifiDirectReceiverRegistered = false;
+    private List<BluetoothDevice> discoveredDevices;
 
 
     // --- Transport Selection ---
@@ -205,6 +212,8 @@ public class MainActivity extends AppCompatActivity {
         // Initialize both transports
         initializeWifiDirect(); // Sets up Wi-Fi Direct
         initializeBluetooth();// sets up bluetooth
+        makeBluetoothDiscoverable();
+        
 
 
         // Chooses which transport to use (Wi-Fi Direct or Bluetooth)
@@ -1325,6 +1334,13 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
+    private String getMyDeviceName() {
+        if (ownDeviceId == null || ownDeviceId.isEmpty()) {
+            Log.e(TAG, "Device name not initialized!");
+            initializeMyDeviceName();
+        }
+        return ownDeviceId;
+    }
     private void initializeMyDeviceName() {
         // Get this device's Bluetooth name
         ownDeviceId = bluetoothAdapter.getName();
@@ -1343,13 +1359,6 @@ public class MainActivity extends AppCompatActivity {
         }
 
         Log.d(TAG, "✓ My device name: " + ownDeviceId);
-    }
-    private String getMyDeviceName() {
-        if (ownDeviceId == null || ownDeviceId.isEmpty()) {
-            Log.e(TAG, "Device name not initialized!");
-            initializeMyDeviceName();
-        }
-        return ownDeviceId;
     }
 
     private void generateAndSendAck(Message originalMessage) throws Exception {
@@ -1427,7 +1436,7 @@ public class MainActivity extends AppCompatActivity {
         if (activeTransport == TransportType.WIFI_DIRECT) {
             discoverWifiDirectPeers();
         } else {
-            discoverBluetoothPeers();
+            startBluetoothDiscovery();
         }
     }
 
@@ -1490,8 +1499,7 @@ public class MainActivity extends AppCompatActivity {
 
         Log.d(TAG, "Starting Bluetooth peer discovery");
         bluetoothAdapter.startDiscovery();
-        statusTextView.setText("Status: Discovering (Bluetooth)...");
-        statusTextView.setTextColor(0xFFFFC107);
+
     }
 
     private void initializeBluetooth() {
@@ -1577,7 +1585,7 @@ public class MainActivity extends AppCompatActivity {
                     Log.w(TAG, "No DTN-compatible devices found (found headsets/other devices)");
                     statusTextView.setText("Status: No DTN app on other devices");
                     Toast.makeText(this, "Run DTN app on another device first", Toast.LENGTH_LONG).show();
-                    return;
+
                 }
             }
         } catch (SecurityException e) {
@@ -1585,15 +1593,46 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // ════════════════════════════════════════════════════════════════
-        // STRATEGY 2: Try BLE Scan (FALLBACK FOR MODERN DEVICES)
+        // STRATEGY 2: Try Classic Bluetooth
+        // ════════════════════════════════════════════════════════════════
+
+        Log.d(TAG, "Starting Classic Bluetooth discovery...");
+
+        try {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
+                    != PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "Permissions denied");
+                return;
+            }
+
+            // ✓ Start discovery (finds unpaired devices)
+            bluetoothAdapter.startDiscovery();
+            Log.d(TAG, "✓ Classic Bluetooth discovery started");
+            statusTextView.setText("Status: Discovering devices...");
+
+            // Return here - don't try BLE if classic is working
+            return;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Classic discovery failed, trying BLE", e);
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // STRATEGY 3: Try BLE Scan
         // ════════════════════════════════════════════════════════════════
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            tryBLEScan();
-        }else{
-            Log.w(TAG, "No devices found and BLE not supported");
-            statusTextView.setText("Status: No DTN devices found");
-            Toast.makeText(this, "No DTN devices found - pair a device first", Toast.LENGTH_LONG).show();
+            Log.d(TAG, "✓ Starting BLE (Android >= LOLLIPOP)");
+            Log.d(TAG, ">>> BEFORE startBLEAdvertising()");
+
+            startBLEAdvertising();  // ✓ Advertise first
+
+            Log.d(TAG, ">>> AFTER startBLEAdvertising(), BEFORE tryBLEScan()");
+
+            tryBLEScan();  // ✓ Then scan
+
+            Log.d(TAG, ">>> AFTER tryBLEScan()");
+            return;  // ✓ Exit after BLE
         }
 
         Log.w(TAG, "No devices found and BLE scan not supported");
@@ -1657,20 +1696,55 @@ public class MainActivity extends AppCompatActivity {
 
             ScanSettings settings = new ScanSettings.Builder()
                     .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setReportDelay(0)  // ✓ Report immediately
                     .build();
 
-            ScanCallback callback = new ScanCallback() {
+            // ✓ Store callback as instance variable so we can stop it later
+            final ScanCallback callback = new ScanCallback() {
                 @Override
                 public void onScanResult(int callbackType, ScanResult result) {
                     BluetoothDevice device = result.getDevice();
                     String deviceName = device.getName() != null ? device.getName() : "Unknown";
-                    Log.d(TAG, "✓ Found (BLE): " + deviceName + " (" + device.getAddress() + ")");
+                    int rssi = result.getRssi();
+                    Log.d(TAG, "📱📱📱 onScanResult TRIGGERED! Device found!");
+                    Log.d(TAG, "Device: " + deviceName + " (" + device.getAddress() + ")");
+                    Log.d(TAG, "RSSI: " + rssi + " dBm");
 
                     // Connect to first found device
                     connectToBluetoothDevice(device);
 
-                    // Stop scanning after first device
-                    scanner.stopScan(this);
+                    // ✓ Stop scanning after first device
+                    try {
+                        scanner.stopScan(this);
+                        Log.d(TAG, "✓ BLE scan stopped (found device)");
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error stopping BLE scan", e);
+                    }
+                }
+
+                @Override
+                public void onScanFailed(int errorCode) {
+                    Log.e(TAG, "❌ BLE scan failed with error code: " + errorCode);
+
+                    String errorMsg = "";
+                    switch (errorCode) {
+                        case SCAN_FAILED_ALREADY_STARTED:
+                            errorMsg = "Scan already started";
+                            break;
+                        case SCAN_FAILED_APPLICATION_REGISTRATION_FAILED:
+                            errorMsg = "App registration failed";
+                            break;
+                        case SCAN_FAILED_INTERNAL_ERROR:
+                            errorMsg = "Internal error";
+                            break;
+                        case SCAN_FAILED_FEATURE_UNSUPPORTED:
+                            errorMsg = "Feature unsupported";
+                            break;
+                        default:
+                            errorMsg = "Unknown error (" + errorCode + ")";
+                    }
+
+                    Toast.makeText(MainActivity.this, "BLE scan failed: " + errorMsg, Toast.LENGTH_SHORT).show();
                 }
             };
 
@@ -1678,10 +1752,142 @@ public class MainActivity extends AppCompatActivity {
             Log.d(TAG, "✓ BLE scan started");
             statusTextView.setText("Status: Scanning for BLE devices...");
 
+            // ✓ IMPORTANT: Stop scan after 20 seconds to save battery
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    Log.d(TAG, "Stopping BLE scan (timeout)");
+                    scanner.stopScan(callback);
+                    Log.d(TAG, "✓ BLE scan stopped (timeout)");
+
+                    if (!isBluetoothConnected) {
+                        statusTextView.setText("Status: No BLE devices found");
+                        Toast.makeText(MainActivity.this, "No BLE devices found", Toast.LENGTH_SHORT).show();
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error stopping BLE scan", e);
+                }
+            }, 20000);  // 20 seconds timeout
+
         } catch (SecurityException e) {
             Log.e(TAG, "BLE scan permission denied: " + e.getMessage());
+            Toast.makeText(this, "BLE permission denied", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             Log.e(TAG, "BLE scan error: " + e.getMessage());
+            Log.e(TAG, "Exception details:", e);
+        }
+    }
+    private void startBLEAdvertising() {
+        Log.d(TAG, ">>> STARTING BLE ADVERTISING...");
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            Log.e(TAG, "❌ Android < LOLLIPOP, BLE not supported");
+            return;
+        }
+        Log.d(TAG, "✓ Android version OK");
+
+        try {
+            // Step 1: Get Bluetooth Manager
+            BluetoothManager bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+            if (bluetoothManager == null) {
+                Log.e(TAG, "❌ BluetoothManager is null");
+                return;
+            }
+            Log.d(TAG, "✓ Got BluetoothManager");
+
+            // Step 2: Get Bluetooth Adapter
+            BluetoothAdapter adapter = bluetoothManager.getAdapter();
+            if (adapter == null) {
+                Log.e(TAG, "❌ BluetoothAdapter is null");
+                return;
+            }
+            Log.d(TAG, "✓ Got BluetoothAdapter");
+
+            // Step 3: Check Bluetooth enabled
+            if (!adapter.isEnabled()) {
+                Log.e(TAG, "❌ Bluetooth is NOT enabled");
+                return;
+            }
+            Log.d(TAG, "✓ Bluetooth is enabled");
+
+            // Step 4: Get BLE Advertiser
+            BluetoothLeAdvertiser advertiser = adapter.getBluetoothLeAdvertiser();
+            if (advertiser == null) {
+                Log.e(TAG, "❌ BluetoothLeAdvertiser is null - BLE NOT supported");
+                return;
+            }
+            Log.d(TAG, "✓ Got BluetoothLeAdvertiser");
+
+            // Step 5: Check permissions (Android 12+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Log.d(TAG, "Checking BLUETOOTH_ADVERTISE permission (Android 12+)...");
+                if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    Log.e(TAG, "❌ BLUETOOTH_ADVERTISE permission not granted");
+                    return;
+                }
+                Log.d(TAG, "✓ BLUETOOTH_ADVERTISE permission granted");
+            }
+
+            // Step 6: Create Advertising Data
+            AdvertiseData advertisingData = new AdvertiseData.Builder()
+                    .setIncludeDeviceName(true)
+                    .build();
+            Log.d(TAG, "✓ Created AdvertiseData with device name");
+
+            // Step 7: Create Advertising Settings
+            AdvertiseSettings settings = new AdvertiseSettings.Builder()
+                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+                    .setTxPowerLevel(2)
+                    .setConnectable(true)
+                    .build();
+            Log.d(TAG, "✓ Created AdvertiseSettings");
+
+            // Step 8: Start Advertising
+            Log.d(TAG, "Starting advertiser.startAdvertising()...");
+
+            advertiser.startAdvertising(settings, advertisingData, new AdvertiseCallback() {
+                @Override
+                public void onStartSuccess(AdvertiseSettings settingsInEffect) {
+                    Log.d(TAG, "✓✓✓ BLE ADVERTISING STARTED SUCCESSFULLY ✓✓✓");
+                    Toast.makeText(MainActivity.this, "✓ BLE Advertising Active", Toast.LENGTH_SHORT).show();
+                }
+
+                @Override
+                public void onStartFailure(int errorCode) {
+                    Log.e(TAG, "❌❌❌ BLE ADVERTISING FAILED ❌❌❌");
+                    Log.e(TAG, "Error code: " + errorCode);
+
+                    String errorMsg = "";
+                    switch (errorCode) {
+                        case AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED:
+                            errorMsg = "ALREADY_STARTED (0)";
+                            break;
+                        case AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE:
+                            errorMsg = "DATA_TOO_LARGE (1)";
+                            break;
+                        case AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS:
+                            errorMsg = "TOO_MANY_ADVERTISERS (2)";
+                            break;
+                        case AdvertiseCallback.ADVERTISE_FAILED_INTERNAL_ERROR:
+                            errorMsg = "INTERNAL_ERROR (3)";
+                            break;
+                        default:
+                            errorMsg = "UNKNOWN (" + errorCode + ")";
+                    }
+
+                    Log.e(TAG, "Failure reason: " + errorMsg);
+                    Toast.makeText(MainActivity.this, "BLE Advertising failed: " + errorMsg, Toast.LENGTH_LONG).show();
+                }
+            });
+
+            Log.d(TAG, "✓ advertiser.startAdvertising() called (waiting for callback...)");
+
+        } catch (SecurityException e) {
+            Log.e(TAG, "❌ SecurityException in BLE advertising", e);
+            e.printStackTrace();
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Exception in BLE advertising", e);
+            e.printStackTrace();
         }
     }
 
@@ -1707,17 +1913,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // Called when devices found
-    public void updateBluetoothDeviceList(List<BluetoothDevice> devices) {
-        this.bluetoothDevices = devices;
-        Log.d(TAG, "Updated device list: " + devices.size() + " devices");
-        // Update UI here
-    }
-    // Called when discovery finishes
-    public void onBluetoothDiscoveryFinished(List<BluetoothDevice> devices) {
-        Log.d(TAG, "Discovery finished with " + devices.size() + " devices");
-        statusTextView.setText("Found: " + devices.size() + " devices");
-    }
     // Called when device is paired
     public void onBluetoothDevicePaired(BluetoothDevice device) {
         Log.d(TAG, "Device paired: " + device.getName());
@@ -2076,21 +2271,219 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
 
-                StringBuilder friendsList = new StringBuilder();
-                for (Friend friend : friends) {
-                    friendsList.append("📱 ").append(friend.friendlyName)
-                            .append("\n   ").append(friend.deviceId)
-                            .append("\n\n");
+                String[] friendNames = new String[friends.size()];
+                for (int i = 0; i < friends.size(); i++) {
+                    friendNames[i] = friends.get(i).friendlyName;
                 }
 
                 new AlertDialog.Builder(this)
-                        .setTitle("Friends (" + friends.size() + ")")
-                        .setMessage(friendsList.toString())
-                        .setPositiveButton("OK", null)
+                        .setTitle("Select Friend to Message (" + friends.size() + ")")
+                        .setSingleChoiceItems(friendNames, -1, (dialog, which) -> {
+                            // which = selected index
+                            Friend selectedFriend = friends.get(which);
+
+                            Log.d(TAG, "Selected friend: " + selectedFriend.friendlyName);
+
+                            // Close dialog
+                            dialog.dismiss();
+
+                            // Open message composer
+                            openMessageComposer(selectedFriend);
+                        })
+                        .setNegativeButton("Cancel", null)
                         .show();
             });
         });
     }
+
+    private void openMessageComposer(Friend selectedFriend) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+
+        // Create input field
+        final EditText messageInput = new EditText(this);
+        messageInput.setHint("Type message for " + selectedFriend.friendlyName);
+        messageInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        messageInput.setLines(3);
+
+        builder.setTitle("Message to " + selectedFriend.friendlyName)
+                .setView(messageInput)
+                .setPositiveButton("Send", (dialog, which) -> {
+                    String messageText = messageInput.getText().toString().trim();
+
+                    if (messageText.isEmpty()) {
+                        Toast.makeText(MainActivity.this, "Message is empty", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+
+                    // ✓ Send message to selected friend
+                    sendMessageToFriend(selectedFriend, messageText);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+    private void sendMessageToFriend(Friend friend, String messageText) {
+        String destinationDeviceName = friend.friendlyName;  // or use friend.deviceId
+
+        Log.d(TAG, "Sending message to friend: " + friend.friendlyName);
+
+        executor.execute(() -> {
+            try {
+                final Message message = new Message();
+                message.message_id = UUID.randomUUID().toString();
+                message.encrypted_payload = CryptoUtils.encrypt(messageText);
+                message.checksum = CryptoUtils.generateChecksum(message.encrypted_payload);
+
+                // Set source and destination
+                message.source_id = getMyDeviceName();
+                message.destination_id = destinationDeviceName;  // Friend's name
+
+                message.priority = 1;  // Default priority
+                message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000);  // 2 hours
+                message.hop_count = 0;
+                message.copy_count = currentProtocol.equals("SPRAY_AND_WAIT") ? 6 : 1;
+
+                // Save to database
+                messageDao.insert(message);
+
+                Log.d(TAG, "✓ Message saved for " + destinationDeviceName);
+
+                // Log event
+                logger.logEvent(String.format(Locale.US,
+                        "EVENT=DIRECT_MESSAGE | FROM=%s | TO=%s | MSG_ID=%s | PROTOCOL=%s | TEXT_LENGTH=%d",
+                        getMyDeviceName(), destinationDeviceName, message.message_id,
+                        currentProtocol, messageText.length()));
+
+                runOnUiThread(() -> {
+                    // ✓ Check if friend is connected
+                    if (isConnectedToDevice(destinationDeviceName)) {
+                        // Send immediately
+                        sendViaConnectedPeer(message);
+                        Toast.makeText(MainActivity.this,
+                                "✓ Sent directly to " + friend.friendlyName,
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        // Store for DTN delivery
+                        Toast.makeText(MainActivity.this,
+                                "Message stored. Will be delivered via DTN routing",
+                                Toast.LENGTH_LONG).show();
+                    }
+
+                    // Display in chat
+                    String displayText = String.format(Locale.US, "Me → %s: %s",
+                            friend.friendlyName, messageText);
+                    ChatMessage chatMessage = new ChatMessage(displayText, message.message_id, false);
+                    chatMessages.add(chatMessage);
+                    chatAdapter.notifyDataSetChanged();
+                    chatListView.smoothScrollToPosition(chatMessages.size() - 1);
+                });
+
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending message to friend", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(MainActivity.this, "Error sending message", Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+
+    private boolean isConnectedToDevice(String deviceName) {
+        Log.d(TAG, "Checking connection for: " + deviceName);
+
+        if (activeTransport == TransportType.BLUETOOTH) {
+            // ✓ For Bluetooth: Check isBluetoothConnected flag and device name
+            boolean isConnected = isBluetoothConnected &&
+                    connectedBluetoothDeviceName != null &&
+                    (connectedBluetoothDeviceName.equals(deviceName) ||
+                            connectedBluetoothDeviceName.contains(deviceName));
+
+            Log.d(TAG, "Bluetooth check: isConnected=" + isBluetoothConnected +
+                    ", deviceName=" + connectedBluetoothDeviceName +
+                    ", match=" + isConnected);
+
+            return isConnected;
+
+        } else if (activeTransport == TransportType.WIFI_DIRECT) {
+            // ✓ For Wi-Fi Direct: Check deviceArray and find matching device
+            if (deviceArray != null && deviceArray.length > 0) {
+                for (WifiP2pDevice device : deviceArray) {
+                    if (device != null &&
+                            (device.deviceName.equals(deviceName) ||
+                                    device.deviceAddress.equals(deviceName))) {
+
+                        Log.d(TAG, "Wi-Fi Direct: Found matching device ✓");
+                        return true;
+                    }
+                }
+            }
+
+            Log.d(TAG, "Wi-Fi Direct: No matching device found");
+            return false;
+        }
+
+        return false;
+    }
+
+    private void sendViaConnectedPeer(Message message) {
+        try {
+            if (activeTransport == TransportType.BLUETOOTH) {
+                if (bluetoothClientThread != null && bluetoothClientThread.isAlive()) {
+                    bluetoothClientThread.write(message);
+                    Log.d(TAG, "✓ Message sent via Bluetooth to " + message.destination_id);
+                }
+            } else if (activeTransport == TransportType.WIFI_DIRECT) {
+                if (serverThread != null && serverThread.isConnected()) {
+                    serverThread.write(message);
+                    Log.d(TAG, "✓ Message sent via Wi-Fi Direct to " + message.destination_id);
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error sending message", e);
+        }
+    }
+    // ✓ ADD THIS METHOD in MainActivity
+    public void updateBluetoothDeviceList(List<BluetoothDevice> devices) {
+        this.discoveredDevices = discoveredDevices;
+        Log.d(TAG, "updateBluetoothDeviceList called with " + discoveredDevices.size() + " devices");
+
+        // Create array of device names
+        String[] deviceNames = new String[discoveredDevices.size()];
+
+        for (int i = 0; i < discoveredDevices.size(); i++) {
+            BluetoothDevice device = discoveredDevices.get(i);
+            String name = device.getName() != null ? device.getName() : "Unknown";
+            deviceNames[i] = name + " (" + device.getAddress() + ")";
+        }
+
+        // Update ListView
+        runOnUiThread(() -> {
+            ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                    MainActivity.this,
+                    android.R.layout.simple_list_item_1,
+                    deviceNames
+            );
+
+            peerListView.setAdapter(adapter);
+            Log.d(TAG, "✓ Peer list updated: " + discoveredDevices.size() + " devices");
+        });
+    }
+    public void onBluetoothDiscoveryFinished(List<BluetoothDevice> devices) {
+        Log.d(TAG, "onBluetoothDiscoveryFinished: Found " + discoveredDevices.size() + " devices");
+
+        runOnUiThread(() -> {
+            statusTextView.setText("Status: Found " + discoveredDevices.size() + " devices");
+
+            if (discoveredDevices.size() > 0) {
+                Toast.makeText(MainActivity.this,
+                        "✓ Found " + discoveredDevices.size() + " device(s)",
+                        Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(MainActivity.this,
+                        "No devices found",
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
 
     private ActivityResultLauncher<Intent> enableBluetoothLauncher =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -2103,6 +2496,23 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
 
+    private void makeBluetoothDiscoverable() {
+        Intent discoverableIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
+        discoverableIntent.putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300); // 300 seconds = 5 minutes
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
+                    != PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "BLUETOOTH_ADVERTISE permission not granted");
+                return;
+            }
+        }
+
+        startActivity(discoverableIntent);
+        Log.d(TAG, "✓ Device is now discoverable for 5 minutes");
+
+        Toast.makeText(this, "✓ This device is now discoverable", Toast.LENGTH_LONG).show();
+    }
 
     @Override
     protected void onDestroy() {
