@@ -51,14 +51,14 @@ public class ServerThread extends Thread {
         try {
             serverSocket = new ServerSocket(8888);
             serverSocket.setReuseAddress(true);
-            serverSocket.setSoTimeout(0);  // No timeout
+            serverSocket.setSoTimeout(60000);  // No timeout
             Log.d(TAG, "Server socket timeout set to: no timeout");
             Log.d(TAG, "Server listening on port 8888");
 
             socket = serverSocket.accept();
             Log.d(TAG, "Client connected from: " + socket.getInetAddress().getHostAddress());
 
-            // FIXED: Initialize streams properly
+            // Initialize streams properly
             oos = new ObjectOutputStream(socket.getOutputStream());
             oos.flush();
             ois = new ObjectInputStream(socket.getInputStream());

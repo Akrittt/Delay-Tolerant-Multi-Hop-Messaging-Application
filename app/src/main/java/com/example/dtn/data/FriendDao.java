@@ -69,22 +69,6 @@ public interface FriendDao {
     @Query("SELECT COUNT(*) FROM friends")
     int getFriendCount();
 
-    /**
-     * Get all friends sorted by most recently encountered.
-     * Essential for Spray-and-Wait routing: prefer forwarding to recently-seen peers.
-     * @return Friends ordered by lastEncounteredTimestamp (newest first)
-     */
-    @Query("SELECT * FROM friends ORDER BY last_encountered_timestamp DESC")
-    List<Friend> getFriendsByRecentEncounter();
-
-    /**
-     * Get friends encountered within a time window (e.g., last 24 hours).
-     * Useful for determining "active" peers for routing decisions.
-     * @param sinceTimestamp Minimum timestamp in milliseconds
-     * @return Friends encountered after the specified time
-     */
-    @Query("SELECT * FROM friends WHERE last_encountered_timestamp > :sinceTimestamp")
-    List<Friend> getRecentlyActiveencounteredFriends(long sinceTimestamp);
 
 
 
