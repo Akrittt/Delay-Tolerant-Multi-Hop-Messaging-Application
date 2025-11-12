@@ -187,7 +187,7 @@ public class EpidemicRouting implements RoutingProtocol {
             sent = true;
             Log.d(TAG, String.format("Sent message %s via Bluetooth ClientThread", message.message_id));
         } else if (serverThread != null && serverThread.isAlive()) {
-            serverThread.write(message);
+            serverThread.broadcastToAll(message);
             sent = true;
             Log.d(TAG, String.format("Sent message %s via Bluetooth ServerThread", message.message_id));
         }
@@ -198,6 +198,144 @@ public class EpidemicRouting implements RoutingProtocol {
                     "EVENT=SEND_FAILED | TRANSPORT=BLUETOOTH | MSG_ID=%s | REASON=NO_ACTIVE_THREAD",
                     message.message_id));
         }
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    public void forwardMessagesToMultipleDevicesBluetooth(
+            List<Message> messagesToForward,
+            List<BluetoothDevice> connectedDevices,
+            BluetoothServerThread serverThread,
+            List<BluetoothClientThread> clientThreads) {
+
+        if (messagesToForward == null || messagesToForward.isEmpty()) {
+            Log.d(TAG, "No messages to forward");
+            return;
+        }
+
+        if (connectedDevices == null || connectedDevices.isEmpty()) {
+            Log.d(TAG, "No connected devices");
+            return;
+        }
+
+        Log.d(TAG, "=== MESH FORWARDING START ===");
+        Log.d(TAG, "Messages to forward: " + messagesToForward.size());
+        Log.d(TAG, "Connected devices: " + connectedDevices.size());
+
+        int totalForwarded = 0;
+
+        // Process each message
+        for (Message message : messagesToForward) {
+
+            // Check hop count limit
+            if (message.hop_count >= MAX_HOPS) {
+                Log.d(TAG, "Message " + message.message_id + " reached max hops");
+                continue;
+            }
+
+            Set<String> forwardedTo = new HashSet<>();
+
+            // Forward to each connected peer
+            for (BluetoothDevice peer : connectedDevices) {
+                try {
+                    String peerId = peer.getName();
+                    String peerAddress = peer.getAddress();
+
+                    // Skip if message is from this peer
+                    if (message.source_id != null &&
+                            (message.source_id.equals(peerId) || message.source_id.equals(peerAddress))) {
+                        Log.d(TAG, "Skipping message from sender: " + peerId);
+                        continue;
+                    }
+
+                    // Skip if peer already has this message
+                    if (hasPeerSeenMessage(peerId, message.message_id)) {
+                        Log.d(TAG, "Peer " + peerId + " already has message");
+                        continue;
+                    }
+
+                    // Skip if already forwarded to this peer in this batch
+                    if (forwardedTo.contains(peerAddress)) {
+                        continue;
+                    }
+
+                    // Increment hop count for this transmission
+                    Message messageCopy = copyMessage(message);
+                    messageCopy.hop_count++;
+
+                    // Try to send via client threads first
+                    boolean sent = false;
+                    if (clientThreads != null) {
+                        for (BluetoothClientThread client : clientThreads) {
+                            if (client.getRemoteDeviceAddress().equals(peerAddress) &&
+                                    client.isConnected()) {
+                                client.write(messageCopy);
+                                sent = true;
+                                forwardedTo.add(peerAddress);
+                                totalForwarded++;
+
+                                Log.d(TAG, "✓ Forwarded " + message.message_id +
+                                        " to " + peerId + " via client (hop " + messageCopy.hop_count + ")");
+                                break;
+                            }
+                        }
+                    }
+
+                    // If not sent via client, try server
+                    if (!sent && serverThread != null && serverThread.isAlive()) {
+                        serverThread.sendToClient(peerAddress, messageCopy);
+                        forwardedTo.add(peerAddress);
+                        totalForwarded++;
+
+                        Log.d(TAG, "✓ Forwarded " + message.message_id +
+                                " to " + peerId + " via server (hop " + messageCopy.hop_count + ")");
+                    }
+
+                    // Record that peer has seen this message
+                    if (forwardedTo.contains(peerAddress)) {
+                        recordMessageForPeer(peerId, message.message_id);
+                    }
+
+                } catch (Exception e) {
+                    Log.e(TAG, "Error forwarding to peer", e);
+                }
+            }
+
+            // Update database with new hop count
+            if (!forwardedTo.isEmpty()) {
+                message.hop_count++;
+                try {
+                    messageDao.update(message);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error updating message hop count", e);
+                }
+            }
+        }
+
+        Log.d(TAG, "=== MESH FORWARDING COMPLETE ===");
+        Log.d(TAG, "Total forwards: " + totalForwarded);
+
+        logger.logEvent(String.format(Locale.US,
+                "EVENT=MESH_FORWARDING | PROTOCOL=EPIDEMIC | MESSAGES=%d | FORWARDS=%d | PEERS=%d",
+                messagesToForward.size(), totalForwarded, connectedDevices.size()));
+    }
+
+    /**
+     * Helper method to create a copy of a message
+     */
+    private Message copyMessage(Message original) {
+        Message copy = new Message();
+        copy.message_id = original.message_id;
+        copy.message_type = original.message_type;
+        copy.source_id = original.source_id;
+        copy.destination_id = original.destination_id;
+        copy.encrypted_payload = original.encrypted_payload;
+        copy.checksum = original.checksum;
+        copy.priority = original.priority;
+        copy.ttl_timestamp = original.ttl_timestamp;
+        copy.hop_count = original.hop_count;
+        copy.copy_count = original.copy_count;
+        copy.is_delivered = original.is_delivered;
+        return copy;
     }
 
     /**

@@ -7,17 +7,14 @@ import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.os.Handler;
 import android.util.Log;
-
 import androidx.annotation.RequiresPermission;
-
-import com.example.dtn.MainActivity;
 import com.example.dtn.data.Message;
-
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.UUID;
 
 @SuppressLint("MissingPermission")
@@ -32,16 +29,11 @@ public class BluetoothServerThread extends Thread {
     private final BluetoothAdapter adapter;
     private final Handler handler;
     private BluetoothServerSocket serverSocket;
-    private BluetoothSocket socket;
-    private ObjectInputStream ois;
-    private ObjectOutputStream oos;
     private volatile boolean running = true;
     public static final int MESSAGE_READ = 1;
     public static final int MESSAGE_CONNECTION_ESTABLISHED = 2;
     public static final int MESSAGE_CONNECTION_LOST = 3;
-
-
-
+    private List<ClientHandler> activeClients = Collections.synchronizedList(new ArrayList<>());
 
     public BluetoothServerThread(BluetoothAdapter adapter, Handler handler) {
         this.adapter = adapter;
@@ -53,286 +45,240 @@ public class BluetoothServerThread extends Thread {
     @Override
     public void run() {
         try {
-            Log.d(TAG, "Starting Bluetooth server...");
+            serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, BT_UUID);
+            Log.d(TAG, "✓ Server listening - accepting multiple clients");
 
-            try {
-                serverSocket = adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, BT_UUID);
-                Log.d(TAG, "✓ Bluetooth server listening on " + SERVICE_NAME);
-
-            } catch (SecurityException e) {
-                Log.e(TAG, "❌❌❌ SecurityException: Missing Bluetooth permission!", e);
-                Log.e(TAG, "Please ensure BLUETOOTH_CONNECT permission is granted");
-
-                // Notify MainActivity
-                android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
-                msg.obj = "PERMISSION_DENIED";
-                handler.sendMessage(msg);
-
-                return; // ✓ Exit thread
-            }
-
-            // ✓ Main server loop - accept multiple clients sequentially
             while (running) {
                 try {
-                    Log.d(TAG, "Waiting for client connection...");
+                    // Accept new client
+                    BluetoothSocket clientSocket = serverSocket.accept();
 
-                    // ✓ Accept incoming connection (blocks until client connects)
-                    socket = serverSocket.accept();
+                    if (clientSocket != null) {
+                        String clientName = clientSocket.getRemoteDevice().getName();
+                        String clientAddress = clientSocket.getRemoteDevice().getAddress();
 
-                    if (socket != null) {
-                        String clientName = "Unknown";
-                        String clientAddress = "Unknown";
+                        Log.d(TAG, "✓ Client #" + (activeClients.size() + 1) + " connected: " + clientName);
 
-                        try {
-                            clientName = socket.getRemoteDevice().getName();
-                            clientAddress = socket.getRemoteDevice().getAddress();
-                        } catch (SecurityException e) {
-                            Log.w(TAG, "Cannot get device info - permission denied");
+                        // Check connection limit
+                        if (activeClients.size() >= MAX_CLIENTS) {
+                            Log.w(TAG, "Max clients reached, rejecting: " + clientName);
+                            clientSocket.close();
+                            continue;
                         }
 
-                        Log.d(TAG, "✓ Client connected: " + clientName + " (" + clientAddress + ")");
+                        // Create handler for this client
+                        ClientHandler clientHandler = new ClientHandler(clientSocket, clientName, clientAddress);
+                        activeClients.add(clientHandler);
+                        clientHandler.start();
 
-                        // ✓ Handle this client connection (blocks until disconnected)
-                        handleClientConnection(socket);
-
-                        // After client disconnects, loop back to accept next client
-                        Log.d(TAG, "Ready to accept new connections");
+                        // Notify MainActivity
+                        handler.obtainMessage(MESSAGE_CONNECTION_ESTABLISHED,
+                                clientName + " (Total: " + activeClients.size() + ")").sendToTarget();
                     }
 
-                } catch (IOException acceptException) {
+                } catch (IOException e) {
                     if (running) {
-                        Log.e(TAG, "Server accept() failed", acceptException);
-                        // Continue trying to accept connections
-                    } else {
-                        Log.d(TAG, "Server socket closed intentionally");
-                        break;
+                        Log.e(TAG, "Accept failed", e);
                     }
                 }
             }
 
         } catch (IOException e) {
-            Log.e(TAG, "Server socket creation failed", e);
+            Log.e(TAG, "Server creation failed", e);
         } finally {
             close();
         }
     }
 
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private void handleClientConnection(BluetoothSocket clientSocket) {
-        try {
-            String deviceName = "Unknown";
-            String deviceAddress = "Unknown";
+    // Inner class to handle each client connection
+    private class ClientHandler extends Thread {
+        private final BluetoothSocket socket;
+        private final String deviceName;
+        private final String deviceAddress;
+        private ObjectInputStream ois;
+        private ObjectOutputStream oos;
+        private volatile boolean clientRunning = true;
 
+        public ClientHandler(BluetoothSocket socket, String name, String address) {
+            this.socket = socket;
+            this.deviceName = name;
+            this.deviceAddress = address;
+        }
+
+        @Override
+        public void run() {
             try {
-                deviceName = clientSocket.getRemoteDevice().getName();
-                deviceAddress = clientSocket.getRemoteDevice().getAddress();
-            } catch (SecurityException e) {
-                Log.w(TAG, "Cannot get device name");
-            }
+                // Initialize streams
+                oos = new ObjectOutputStream(socket.getOutputStream());
+                oos.flush();
+                Thread.sleep(200);
+                ois = new ObjectInputStream(socket.getInputStream());
 
-            Log.d(TAG, "Initializing streams for " + deviceName + "...");
+                Log.d(TAG, "✓ Streams ready for: " + deviceName);
+                // First, handle handshake
+                Log.d(TAG, "Starting handshake with client...");
 
-            // ✓ SERVER INITIALIZES FIRST
-            oos = new ObjectOutputStream(clientSocket.getOutputStream());
-            oos.flush(); // CRITICAL: Send header immediately
-            Log.d(TAG, "✓ Server: OutputStream created and flushed");
+                // Send SERVER_READY
+                oos.writeObject("SERVER_READY");
+                oos.flush();
+                Log.d(TAG, "✓ Server: Sent SERVER_READY");
 
-            // ✓ Give client time to receive header and initialize its OutputStream
-            Thread.sleep(300);
+                // Wait for CLIENT_READY
+                Object clientResponse = ois.readObject();
+                if (!"CLIENT_READY".equals(clientResponse)) {
+                    throw new IOException("Invalid handshake from client: " + clientResponse);
+                }
+                Log.d(TAG, "✓ Server: Received CLIENT_READY");
+                Log.d(TAG, "✓✓✓ Handshake complete - Connection established ✓✓✓");
 
-            // ✓ Now safe to create InputStream (client's header should be ready)
-            ois = new ObjectInputStream(clientSocket.getInputStream());
-            Log.d(TAG, "✓ Server: InputStream created");
+                // Now enter message reading loop
+                Log.d(TAG, "Entering message loop");
 
-            // ✓ HANDSHAKE PROTOCOL
-            Log.d(TAG, "Starting handshake with " + deviceName);
+                // Message loop
+                while (clientRunning && socket.isConnected()) {
+                    try {
+                        Object received = ois.readObject();
 
-            // Send server ready signal
-            oos.writeObject("SERVER_READY");
-            oos.flush();
-            Log.d(TAG, "✓ Server: Sent SERVER_READY");
-
-            // Wait for client acknowledgment (blocking read is OK here)
-            Object clientResponse = ois.readObject();
-
-            if (!"CLIENT_READY".equals(clientResponse)) {
-                throw new IOException("Invalid handshake response: " + clientResponse);
-            }
-
-            Log.d(TAG, "✓ Server: Received CLIENT_READY");
-            Log.d(TAG, "✓✓✓ Handshake complete with " + deviceName + " ✓✓✓");
-
-            // ✓ Update connection status
-            MainActivity.isBluetoothConnected = true;
-
-            // ✓ Now connection is fully established - notify MainActivity
-            android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_ESTABLISHED);
-            msg.obj = deviceName;
-            handler.sendMessage(msg);
-
-            // ✓ Enter message loop
-            Log.d(TAG, "Entering message loop with " + deviceName);
-
-            while (running && clientSocket.isConnected()) {
-                try {
-                    Message message = (Message) ois.readObject();
-
-                    if (message != null) {
-                        Log.d(TAG, "📨 Received from " + deviceName + ": " + message.message_id);
-                        handler.obtainMessage(MESSAGE_READ, message).sendToTarget();
+                        // Only process Message objects after handshake
+                        if (received instanceof Message) {
+                            Message message = (Message) received;
+                            if (message != null) {
+                                Log.d(TAG, "📨 From " + deviceName + ": " + message.message_id);
+                                handler.obtainMessage(MESSAGE_READ, message).sendToTarget();
+                            }
+                        } else {
+                            Log.w(TAG, "Received unexpected object type: " + received.getClass().getSimpleName());
+                        }
+                    } catch (ClassNotFoundException | IOException e) {
+                        Log.e(TAG, "Error reading from " + deviceName, e);
+                        break;
                     }
+                }
+            }catch (Exception e) {
+                Log.e(TAG, "ClientHandler error for " + deviceName, e);
+            } finally {
+                closeClient();
+            }
+        }
 
-                } catch (ClassNotFoundException e) {
-                    Log.e(TAG, "ClassNotFoundException", e);
-                    break;
-
+        public void write(Message message) {
+            if (oos != null && socket.isConnected()) {
+                try {
+                    synchronized (oos) {
+                        oos.writeObject(message);
+                        oos.flush();
+                        oos.reset();
+                    }
+                    Log.d(TAG, "✓ Sent to " + deviceName + ": " + message.message_id);
                 } catch (IOException e) {
-                    Log.e(TAG, "Connection lost while reading from " + deviceName, e);
-                    break;
+                    Log.e(TAG, "Write error to " + deviceName, e);
                 }
             }
+        }
 
-            Log.d(TAG, "Exited message loop with " + deviceName);
+        private void closeClient() {
+            clientRunning = false;
+            try {
+                if (ois != null) ois.close();
+                if (oos != null) oos.close();
+                if (socket != null) socket.close();
+            } catch (IOException e) {
+                Log.e(TAG, "Error closing client", e);
+            }
 
-        } catch (InterruptedException e) {
-            Log.e(TAG, "Thread interrupted", e);
-            Thread.currentThread().interrupt();
+            activeClients.remove(this);
+            Log.d(TAG, "✓ Client disconnected: " + deviceName + " (Remaining: " + activeClients.size() + ")");
 
-        } catch (ClassNotFoundException e) {
-            Log.e(TAG, "Handshake error", e);
-
-        } catch (IOException e) {
-            Log.e(TAG, "Error during connection", e);
-
-        } finally {
-            closeClientConnection(clientSocket);
-            android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
-            handler.sendMessage(msg);
+            handler.obtainMessage(MESSAGE_CONNECTION_LOST,
+                    deviceName + " (Remaining: " + activeClients.size() + ")").sendToTarget();
         }
     }
 
-
-
-    private void closeClientConnection(BluetoothSocket clientSocket) {
-        Log.d(TAG, "Closing client connection...");
-
-        MainActivity.isBluetoothConnected = false;
-
-        // ✓ Close in correct order: Streams → Socket
-        if (ois != null) {
+    // Broadcast message to ALL connected clients
+    public void broadcastToAll(Message message) {
+        Log.d(TAG, "Broadcasting to " + activeClients.size() + " clients");
+        for (ClientHandler client : new ArrayList<>(activeClients)) {
             try {
-                ois.close();
-                Log.d(TAG, "✓ Input stream closed");
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing input stream", e);
-            } finally {
-                ois = null;
+                client.write(message);
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending to client", e);
             }
-        }
-
-        if (oos != null) {
-            try {
-                oos.close();
-                Log.d(TAG, "✓ Output stream closed");
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing output stream", e);
-            } finally {
-                oos = null;
-            }
-        }
-
-        if (clientSocket != null) {
-            try {
-                clientSocket.close();
-                Log.d(TAG, "✓ Client socket closed");
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing client socket", e);
-            }
-        }
-
-        // ✓ Server socket stays open for new connections
-    }
-
-
-    public void write(Message message) {
-        // ✓ Check if stream is available
-        if (oos == null) {
-            Log.e(TAG, "Cannot write - no client connected");
-            return;
-        }
-
-        try {
-            synchronized (this) {  // ✓ Synchronize on 'this' instead of oos
-                oos.writeObject(message);
-                oos.flush();
-                oos.reset();  // ✓ Prevent memory leak from ObjectOutputStream cache
-            }
-            Log.d(TAG, "✓ Sent: " + message.message_id);
-
-        } catch (IOException e) {
-            Log.e(TAG, "Write error - connection may be lost", e);
-
-            // ✓ Notify connection lost
-            android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
-            handler.sendMessage(msg);
         }
     }
 
     public void close() {
-        Log.d(TAG, "Closing BluetoothServerThread...");
-
         running = false;
-        MainActivity.isBluetoothConnected = false;
 
-        // ✓ Close streams
-        if (ois != null) {
-            try {
-                ois.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing input stream", e);
-            } finally {
-                ois = null;
-            }
+        // Close all client connections
+        for (ClientHandler client : new ArrayList<>(activeClients)) {
+            client.closeClient();
         }
+        activeClients.clear();
 
-        if (oos != null) {
-            try {
-                oos.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing output stream", e);
-            } finally {
-                oos = null;
-            }
-        }
-
-        // ✓ Close client socket
-        if (socket != null) {
-            try {
-                socket.close();
-                Log.d(TAG, "✓ Client socket closed");
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing client socket", e);
-            } finally {
-                socket = null;
-            }
-        }
-
-        // ✓ Close server socket LAST
+        // Close server socket
         if (serverSocket != null) {
             try {
                 serverSocket.close();
-                Log.d(TAG, "✓ Server socket closed");
             } catch (IOException e) {
-                Log.e(TAG, "Error closing server socket", e);
-            } finally {
-                serverSocket = null;
+                Log.e(TAG, "Error closing server", e);
             }
         }
 
-        Log.d(TAG, "✓✓✓ BluetoothServerThread cleanup complete");
+        Log.d(TAG, "✓ Server closed");
+    }
+    public String getFirstClientAddress() {
+        synchronized (activeClients) {
+            if (!activeClients.isEmpty()) {
+                ClientHandler firstClient = activeClients.get(0);
+                if (firstClient != null && firstClient.deviceAddress != null) {
+                    return firstClient.deviceAddress;
+                }
+            }
+        }
+        return null;
     }
 
+    // Get count of connected clients
+    public int getConnectedClientCount() {
+        synchronized (activeClients) {
+            return activeClients.size();
+        }
+    }
 
+    /**
+     * Send message to specific client by address
+     * Used for mesh routing
+     */
+    public void sendToClient(String deviceAddress, Message message) {
+        if (deviceAddress == null || message == null) {
+            Log.w(TAG, "Invalid parameters for sendToClient");
+            return;
+        }
 
+        synchronized (activeClients) {
+            for (ClientHandler client : activeClients) {
+                if (client.deviceAddress.equals(deviceAddress)) {
+                    client.write(message);
+                    Log.d(TAG, "Sent message to specific client: " + client.deviceName);
+                    return;
+                }
+            }
+        }
 
+        Log.w(TAG, "Client not found: " + deviceAddress);
+    }
+
+    /**
+     * Get list of connected client addresses
+     * Used for mesh management
+     */
+    public List<String> getConnectedClientAddresses() {
+        List<String> addresses = new ArrayList<>();
+        synchronized (activeClients) {
+            for (ClientHandler client : activeClients) {
+                addresses.add(client.deviceAddress);
+            }
+        }
+        return addresses;
+    }
 }

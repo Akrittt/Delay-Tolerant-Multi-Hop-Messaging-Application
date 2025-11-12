@@ -269,7 +269,7 @@ public class SprayAndWaitRouting implements RoutingProtocol {
             sent = true;
             Log.d(TAG, "Sent via Bluetooth ClientThread");
         } else if (serverThread != null && serverThread.isAlive()) {
-            serverThread.write(message);
+            serverThread.broadcastToAll(message);
             sent = true;
             Log.d(TAG, "Sent via Bluetooth ServerThread");
         }
@@ -281,9 +281,176 @@ public class SprayAndWaitRouting implements RoutingProtocol {
         }
     }
 
+    /**
+     * ✅ NEW METHOD: Mesh-aware Spray-and-Wait forwarding
+     * Distributes copies across multiple connected peers simultaneously
+     */
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    public void forwardMessagesToMultipleDevicesBluetooth(
+            List<Message> messagesToForward,
+            List<BluetoothDevice> connectedDevices,
+            BluetoothServerThread serverThread,
+            List<BluetoothClientThread> clientThreads) {
+
+        if (messagesToForward == null || messagesToForward.isEmpty()) {
+            Log.d(TAG, "No messages to forward");
+            return;
+        }
+
+        if (connectedDevices == null || connectedDevices.isEmpty()) {
+            Log.d(TAG, "No connected devices");
+            return;
+        }
+
+        Log.d(TAG, "=== MESH SPRAY-AND-WAIT START ===");
+        Log.d(TAG, "Messages to forward: " + messagesToForward.size());
+        Log.d(TAG, "Connected devices: " + connectedDevices.size());
+
+        int totalForwarded = 0;
+
+        for (Message message : messagesToForward) {
+
+            // Check hop count
+            if (message.hop_count >= MAX_HOPS) {
+                Log.d(TAG, "Message " + message.message_id + " reached max hops");
+                continue;
+            }
+
+            // SPRAY PHASE: Distribute copies across peers
+            if (message.copy_count > 1) {
+                int availablePeers = connectedDevices.size();
+                int copiesPerPeer = Math.max(1, message.copy_count / (availablePeers + 1));
+                int remainingCopies = message.copy_count;
+
+                Log.d(TAG, "SPRAY: Message " + message.message_id +
+                        " - " + message.copy_count + " copies across " + availablePeers + " peers");
+
+                for (BluetoothDevice peer : connectedDevices) {
+                    if (remainingCopies <= 1) {
+                        break; // Keep at least 1 copy
+                    }
+
+                    try {
+                        String peerId = peer.getName();
+                        String peerAddress = peer.getAddress();
+
+                        // Skip if message is from this peer
+                        if (message.source_id != null &&
+                                (message.source_id.equals(peerId) || message.source_id.equals(peerAddress))) {
+                            continue;
+                        }
+
+                        // Calculate copies to give
+                        int copiesToGive = Math.min(copiesPerPeer, remainingCopies - 1);
+
+                        if (copiesToGive < 1) {
+                            break;
+                        }
+
+                        // Create message copy with allocated copy count
+                        Message messageCopy = copyMessage(message);
+                        messageCopy.copy_count = copiesToGive;
+                        messageCopy.hop_count++;
+
+                        // Try to send
+                        boolean sent = false;
+
+                        if (clientThreads != null) {
+                            for (BluetoothClientThread client : clientThreads) {
+                                if (client.getRemoteDeviceAddress().equals(peerAddress) &&
+                                        client.isConnected()) {
+                                    client.write(messageCopy);
+                                    sent = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!sent && serverThread != null && serverThread.isAlive()) {
+                            serverThread.sendToClient(peerAddress, messageCopy);
+                            sent = true;
+                        }
+
+                        if (sent) {
+                            remainingCopies -= copiesToGive;
+                            totalForwarded++;
+
+                            Log.d(TAG, "✓ SPRAY: Sent " + copiesToGive + " copies to " +
+                                    peerId + " (Remaining: " + remainingCopies + ")");
+                        }
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error during spray to peer", e);
+                    }
+                }
+
+                // Update own copy count
+                message.copy_count = remainingCopies;
+                try {
+                    messageDao.update(message);
+                    Log.d(TAG, "Updated database: keeping " + remainingCopies + " copies");
+                } catch (Exception e) {
+                    Log.e(TAG, "Error updating message", e);
+                }
+
+            }
+            // WAIT PHASE: Forward only to destination
+            else if (message.copy_count == 1) {
+                for (BluetoothDevice peer : connectedDevices) {
+                    try {
+                        String peerId = peer.getName();
+                        String peerAddress = peer.getAddress();
+
+                        // Only forward if this peer is the destination
+                        if (peerId.equals(message.destination_id) ||
+                                peerAddress.equals(message.destination_id)) {
+
+                            Message messageCopy = copyMessage(message);
+                            messageCopy.hop_count++;
+
+                            boolean sent = false;
+
+                            if (clientThreads != null) {
+                                for (BluetoothClientThread client : clientThreads) {
+                                    if (client.getRemoteDeviceAddress().equals(peerAddress) &&
+                                            client.isConnected()) {
+                                        client.write(messageCopy);
+                                        sent = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!sent && serverThread != null && serverThread.isAlive()) {
+                                serverThread.sendToClient(peerAddress, messageCopy);
+                                sent = true;
+                            }
+
+                            if (sent) {
+                                totalForwarded++;
+                                Log.d(TAG, "✓ WAIT: Forwarded " + message.message_id +
+                                        " to destination " + peerId);
+                            }
+
+                            break; // Only send to destination
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error during wait phase", e);
+                    }
+                }
+            }
+        }
+
+        Log.d(TAG, "=== MESH SPRAY-AND-WAIT COMPLETE ===");
+        Log.d(TAG, "Total forwards: " + totalForwarded);
+
+        logger.logEvent(String.format(Locale.US,
+                "EVENT=MESH_FORWARDING | PROTOCOL=SPRAY_AND_WAIT | MESSAGES=%d | FORWARDS=%d | PEERS=%d",
+                messagesToForward.size(), totalForwarded, connectedDevices.size()));
+    }
 
     /**
-     * Deep copy a Message
+     * Helper method to create a copy of a message
      */
     private Message copyMessage(Message original) {
         Message copy = new Message();

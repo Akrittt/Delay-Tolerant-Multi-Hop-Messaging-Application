@@ -34,23 +34,35 @@ public class BluetoothClientThread extends Thread {
     private ObjectOutputStream oos;
     private volatile boolean running = true;
     private volatile boolean connected = false;
+
+    // ✅ MESH FIX: Track device info
+    private final String deviceAddress;
+    private final String deviceName;
+
     public BluetoothClientThread(BluetoothDevice device, Handler handler) {
         this.device = device;
         this.handler = handler;
+        this.deviceAddress = device.getAddress();
+
+        // ✅ MESH FIX: Safe device name retrieval
+        String name = "Unknown";
+        try {
+            name = device.getName();
+            if (name == null || name.isEmpty()) {
+                name = "Device_" + deviceAddress.replace(":", "");
+            }
+        } catch (SecurityException e) {
+            Log.w(TAG, "Cannot get device name");
+        }
+        this.deviceName = name;
+
+        setName("BTClient-" + deviceName);
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     @Override
     public void run() {
-        String deviceName;
-        try {
-            deviceName = device.getName();
-            if (deviceName == null) deviceName = "Unknown";
-        } catch (SecurityException e) {
-            Log.w(TAG, "Cannot get device name - permission denied");
-        }
-
-        Log.d(TAG, "ClientThread: Connecting to " + device.getName());
+        Log.d(TAG, "ClientThread: Connecting to " + deviceName);
 
         int maxRetries = 5;
         int retryCount = 0;
@@ -58,18 +70,19 @@ public class BluetoothClientThread extends Thread {
         while (retryCount < maxRetries && !connected && running) {
             try {
                 retryCount++;
-                Log.d(TAG, "Connection attempt " + retryCount + "/" + maxRetries);
+                Log.d(TAG, "Connection attempt " + retryCount + "/" + maxRetries + " to " + deviceName);
 
                 // Create socket
                 try {
                     socket = device.createRfcommSocketToServiceRecord(BT_UUID);
-                    Log.d(TAG, "✓ Socket created");
+                    Log.d(TAG, "✓ Socket created for " + deviceName);
 
                 } catch (SecurityException e) {
-                    Log.e(TAG, "❌❌❌ SecurityException: BLUETOOTH_CONNECT permission denied!", e);
+                    Log.e(TAG, "✗✗✗ SecurityException: BLUETOOTH_CONNECT permission denied!", e);
                     if (handler != null) {
+                        // ✅ MESH FIX: Send device address in message
                         android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
-                        msg.obj = "PERMISSION_DENIED";
+                        msg.obj = deviceAddress;
                         handler.sendMessage(msg);
                     }
                     return;
@@ -78,32 +91,32 @@ public class BluetoothClientThread extends Thread {
                 // Try to connect
                 try {
                     socket.connect();
-                    Log.d(TAG, "✓ Socket connected to " + device.getName());
+                    Log.d(TAG, "✓ Socket connected to " + deviceName);
                     connected = true;
 
                 } catch (SecurityException e) {
-                    Log.e(TAG, "❌ SecurityException during connect", e);
+                    Log.e(TAG, "✗ SecurityException during connect", e);
                     throw new IOException("Permission denied during connect");
                 }
 
-                // ✓✓✓ CRITICAL: CLIENT WAITS FOR SERVER TO INITIALIZE FIRST
+                // Wait for server to initialize first
                 Log.d(TAG, "Waiting for server to initialize streams...");
-                Thread.sleep(500); // Give server time to create and flush its OutputStream
+                Thread.sleep(500);
 
-                Log.d(TAG, "Initializing client streams...");
+                Log.d(TAG, "Initializing client streams for " + deviceName);
 
-                // ✓ CLIENT CREATES STREAMS SECOND
+                // Client creates streams second
                 oos = new ObjectOutputStream(socket.getOutputStream());
-                oos.flush(); // Send header to server
-                Log.d(TAG, "✓ Client: OutputStream created and flushed");
+                oos.flush();
+                Log.d(TAG, "✓ Client: OutputStream created and flushed for " + deviceName);
 
-                Thread.sleep(200); // Brief delay
+                Thread.sleep(200);
 
                 ois = new ObjectInputStream(socket.getInputStream());
-                Log.d(TAG, "✓ Client: InputStream created");
+                Log.d(TAG, "✓ Client: InputStream created for " + deviceName);
 
-                // ✓✓✓ HANDSHAKE PROTOCOL - CRITICAL FOR SYNCHRONIZATION
-                Log.d(TAG, "Starting handshake with server...");
+                // Handshake protocol
+                Log.d(TAG, "Starting handshake with server " + deviceName);
 
                 // Wait for server ready signal
                 Object serverResponse = ois.readObject();
@@ -112,56 +125,52 @@ public class BluetoothClientThread extends Thread {
                     throw new IOException("Invalid handshake from server: " + serverResponse);
                 }
 
-                Log.d(TAG, "✓ Client: Received SERVER_READY");
+                Log.d(TAG, "✓ Client: Received SERVER_READY from " + deviceName);
 
                 // Send acknowledgment
                 oos.writeObject("CLIENT_READY");
                 oos.flush();
-                Log.d(TAG, "✓ Client: Sent CLIENT_READY");
+                Log.d(TAG, "✓ Client: Sent CLIENT_READY to " + deviceName);
 
-                Log.d(TAG, "✓✓✓ Handshake complete - Connection established ✓✓✓");
-
-                // ✓ Notify MainActivity of successful connection
-                if (handler != null) {
-                    // Define MESSAGE_CONNECTED constant if not already defined
-                    final int MESSAGE_CONNECTED = 2;
-                    android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTED);
-                    msg.obj = device.getName();
-                    handler.sendMessage(msg);
-                }
+                Log.d(TAG, "✓✓✓ Handshake complete with " + deviceName + " ✓✓✓");
 
                 // Update connection flag on main thread
                 Handler mainHandler = new Handler(Looper.getMainLooper());
                 mainHandler.post(() -> {
-                    Log.d(TAG, "✓ UI Updated: Connected to " + device.getName());
+                    Log.d(TAG, "✓ UI Updated: Connected to " + deviceName);
                     MainActivity.isBluetoothConnected = true;
                 });
 
-                // ✓ Now enter message reading loop
-                Log.d(TAG, "Entering message loop");
+                // Enter message reading loop
+                Log.d(TAG, "Entering message loop for " + deviceName);
 
                 while (running && socket.isConnected()) {
                     try {
                         Message message = (Message) ois.readObject();
                         if (message != null) {
-                            Log.d(TAG, "📨 Received: " + message.message_id);
+                            Log.d(TAG, "📨 Received from " + deviceName + ": " + message.message_id);
                             handler.obtainMessage(MESSAGE_READ, message).sendToTarget();
                         }
                     } catch (ClassNotFoundException e) {
-                        Log.e(TAG, "ClassNotFoundException", e);
+                        Log.e(TAG, "ClassNotFoundException from " + deviceName, e);
                         break;
                     } catch (IOException e) {
-                        Log.e(TAG, "Connection lost while reading: " + e.getMessage());
+                        Log.e(TAG, "Connection lost to " + deviceName + ": " + e.getMessage());
                         break;
                     }
                 }
 
                 // If we exit loop, connection is lost
-                Log.w(TAG, "Exited message loop - connection lost");
-                handler.obtainMessage(MESSAGE_CONNECTION_LOST).sendToTarget();
+                Log.w(TAG, "Exited message loop - connection lost to " + deviceName);
+                // ✅ MESH FIX: Send device address in connection lost message
+                if (handler != null) {
+                    android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
+                    msg.obj = deviceAddress;
+                    handler.sendMessage(msg);
+                }
                 connected = false;
 
-                // Connection succeeded, so break retry loop
+                // Connection succeeded, break retry loop
                 break;
 
             } catch (InterruptedException e) {
@@ -180,7 +189,7 @@ public class BluetoothClientThread extends Thread {
 
             } catch (IOException e) {
                 connected = false;
-                Log.w(TAG, "Connection failed (attempt " + retryCount + "): " + e.getMessage());
+                Log.w(TAG, "Connection failed to " + deviceName + " (attempt " + retryCount + "): " + e.getMessage());
                 cleanupSocket();
 
                 if (retryCount < maxRetries) {
@@ -188,10 +197,10 @@ public class BluetoothClientThread extends Thread {
                 }
 
             } catch (SecurityException e) {
-                Log.e(TAG, "❌ SecurityException in main loop", e);
+                Log.e(TAG, "✗ SecurityException in main loop", e);
                 if (handler != null) {
                     android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
-                    msg.obj = "PERMISSION_DENIED";
+                    msg.obj = deviceAddress;
                     handler.sendMessage(msg);
                 }
                 break;
@@ -203,15 +212,17 @@ public class BluetoothClientThread extends Thread {
         }
 
         if (!connected) {
-            Log.e(TAG, "Failed to connect after " + retryCount + " attempts");
+            Log.e(TAG, "Failed to connect to " + deviceName + " after " + retryCount + " attempts");
             if (handler != null) {
-                handler.obtainMessage(MESSAGE_CONNECTION_LOST).sendToTarget();
+                android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
+                msg.obj = deviceAddress;
+                handler.sendMessage(msg);
             }
         }
 
         close();
     }
-    // Helper method to clean up socket after failed attempt
+
     private void cleanupSocket() {
         try {
             if (ois != null) {
@@ -231,9 +242,8 @@ public class BluetoothClientThread extends Thread {
         }
     }
 
-    // Helper method for exponential backoff
     private void waitBeforeRetry(int attempt) {
-        int delay = Math.min(attempt * 2000, 10000); // Max 10 seconds
+        int delay = Math.min(attempt * 2000, 10000);
         Log.d(TAG, "Retrying in " + (delay / 1000) + " seconds...");
         try {
             Thread.sleep(delay);
@@ -252,76 +262,97 @@ public class BluetoothClientThread extends Thread {
             Log.e(TAG, "Cannot write - not connected");
             return;
         }
+
         try {
             synchronized (oos) {
                 oos.writeObject(message);
                 oos.flush();
                 oos.reset();
             }
-            Log.d(TAG, "Sent: " + message.message_id);
+            Log.d(TAG, "Sent to " + deviceName + ": " + message.message_id);
         } catch (Exception e) {
-            Log.e(TAG, "Write error", e);
+            Log.e(TAG, "Write error to " + deviceName, e);
+            connected = false;
+            // ✅ MESH FIX: Notify of connection loss
+            if (handler != null) {
+                android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
+                msg.obj = deviceAddress;
+                handler.sendMessage(msg);
+            }
         }
     }
 
     public void close() {
         running = false;
         connected = false;
-        MainActivity.isBluetoothConnected = false;
+
         try {
-            //close output stream
             if (oos != null) {
                 try {
                     oos.close();
-                    Log.d(TAG, "✓ Output stream closed");
+                    Log.d(TAG, "✓ Output stream closed for " + deviceName);
                 } catch (IOException e) {
                     Log.e(TAG, "Error closing output stream", e);
                 } finally {
-                    oos = null;  // ✓ Prevent memory leak
+                    oos = null;
                 }
             }
-            // close input stream
+
             if (ois != null) {
                 try {
                     ois.close();
-                    Log.d(TAG, "✓ Input stream closed");
+                    Log.d(TAG, "✓ Input stream closed for " + deviceName);
                 } catch (IOException e) {
                     Log.e(TAG, "Error closing input stream", e);
                 } finally {
-                    ois = null;  // ✓ Prevent memory leak
+                    ois = null;
                 }
             }
-            // close socket
+
             if (socket != null) {
                 try {
                     socket.close();
-                    Log.d(TAG, "✓ Socket closed");
+                    Log.d(TAG, "✓ Socket closed for " + deviceName);
                 } catch (IOException e) {
                     Log.e(TAG, "Error closing socket", e);
                 } finally {
-                    socket = null;  // ✓ Prevent memory leak
+                    socket = null;
                 }
             }
         } finally {
-            // ✓ Notify MainActivity that connection was lost
+            // ✅ MESH FIX: Send device address in connection lost message
             if (handler != null) {
                 android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
+                msg.obj = deviceAddress;
                 handler.sendMessage(msg);
-                Log.d(TAG, "✓ Sent CONNECTION_LOST message to MainActivity");
+                Log.d(TAG, "✓ Sent CONNECTION_LOST message for " + deviceName);
             }
 
-            // ✓ Interrupt thread (in case it's blocked on I/O)
             Thread.currentThread().interrupt();
         }
 
-        Log.d(TAG, "✓✓✓ Cleanup complete");
+        Log.d(TAG, "✓✓✓ Cleanup complete for " + deviceName);
     }
+
     public void cancel() {
         running = false;
         close();
     }
 
+    public String getRemoteDeviceAddress() {
+        return deviceAddress;
+    }
+
+    public BluetoothDevice getRemoteDevice() {
+        return device;
+    }
+
     public boolean isConnected() {
         return connected && socket != null && socket.isConnected();
+    }
+
+    // ✅ MESH FIX: Helper method to get device name safely
+    public String getRemoteDeviceName() {
+        return deviceName;
     }
 }
