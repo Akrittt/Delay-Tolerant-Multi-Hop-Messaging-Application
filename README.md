@@ -3,7 +3,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
 [![API](https://img.shields.io/badge/API-24%2B-brightgreen.svg)](https://android-arsenal.com/api?level=24)
 
-A fully functional Android messaging application that operates without internet or cellular networks using Wi-Fi Direct peer-to-peer technology with intelligent routing protocols.
+A Delay-Tolerant Networking (DTN) application for Android that enables peer-to-peer messaging through mesh networks using Wi-Fi Direct and Bluetooth.
 
 <p align="center">
   <img src="screenshots/main_screen.png" width="250" />
@@ -11,19 +11,18 @@ A fully functional Android messaging application that operates without internet 
   <img src="screenshots/connection.png" width="250" />
 </p>
 
-## 🌟 Features
+## 🎯 Overview
+  This application creates opportunistic mesh networks between Android devices, allowing messages to be delivered even when direct connectivity isn't available. Messages hop through intermediate devices to reach their destination.
 
-- **📡 Infrastructure-Free Communication**: Works without internet, cellular networks, or Wi-Fi access points
-- **🔄 Multi-Hop Routing**: Messages automatically hop through intermediate devices to reach destination
-- **🔐 End-to-End Encryption**: AES-256 encryption with SHA-256 integrity verification
-- **🧠 Intelligent Routing**: Two routing protocols implemented:
-  - **Epidemic Routing**: Maximum delivery probability through message flooding
-  - **Spray-and-Wait**: Optimized network overhead with bounded message copies
-- **📦 Store-and-Forward**: Messages persist until delivered, even if recipient is offline
-- **✅ Delivery Confirmation**: ACK mechanism confirms message delivery across multiple hops
-- **👥 Friend Management**: Add trusted contacts for optimized routing
-- **⚡ Priority Messaging**: High/Normal priority for urgent communications
-- **📊 Comprehensive Logging**: Event logging for network analysis and research
+  Key Features
+  -**Dual Transport**: Wi-Fi Direct and Bluetooth connectivity
+  -**Mesh Networking**: Automatic multi-hop message forwarding
+  -**Two Routing Protocols**: Epidemic Routing and Spray-and-Wait
+  -**End-to-End Encryption**: AES-256 encryption with message authentication
+  -**Automatic Discovery**: Continuous peer discovery and connection
+  -**Message Acknowledgment**: Delivery confirmation with ACK mechanism
+
+
 
 ## 🎯 Use Cases
 
@@ -35,38 +34,192 @@ A fully functional Android messaging application that operates without internet 
 
 ## 🏗️ Architecture
 
-### System Design
+### Layer Overview
 ```
 ┌─────────────────────────────────────────────┐
-│ DTN Messenger Application │
-├─────────────────────────────────────────────┤
-│ UI Layer (MainActivity, Adapters) │
-├─────────────────────────────────────────────┤
-│ Routing Layer (Epidemic, Spray-and-Wait) │
-├─────────────────────────────────────────────┤
-│ Network Layer (ServerThread, ClientThread) │
-├─────────────────────────────────────────────┤
-│ Storage Layer (Room Database) │
-├─────────────────────────────────────────────┤
-│ Security Layer (AES-256 Encryption) │
-├─────────────────────────────────────────────┤
-│ Connectivity Layer (Wi-Fi Direct P2P) │
+│           User Interface Layer              │
+│         (MainActivity + UI)                 │
+└─────────────────────────────────────────────┘
+                    ↓↑
+┌─────────────────────────────────────────────┐
+│         Routing Protocol Layer              │
+│  (Epidemic Routing / Spray-and-Wait)        │
+└─────────────────────────────────────────────┘
+                    ↓↑
+┌─────────────────────────────────────────────┐
+│          Network Transport Layer            │
+│    (Wi-Fi Direct / Bluetooth Mesh)          │
+└─────────────────────────────────────────────┘
+                    ↓↑
+┌─────────────────────────────────────────────┐
+│        Data Persistence Layer               │
+│      (Room Database + SQLite)               │
 └─────────────────────────────────────────────┘
 ```
 
-### Key Components
+### 📦 Core Components
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Connectivity** | Wi-Fi Direct (IEEE 802.11) | Device-to-device communication |
-| **Transport** | TCP Sockets (Port 8888) | Reliable message transfer |
-| **Storage** | Room Database (SQLite) | Message & contact persistence |
-| **Security** | AES-256 + SHA-256 | Encryption & data integrity |
-| **Routing** | Custom Protocols | Message forwarding algorithms |
-| **UI** | Material Design | Android native interface |
+1. Network Layer (com.example.dtn.network)
+  Wi-Fi Direct
+    - ServerThread: Accepts incoming Wi-Fi Direct connections
+    - ClientThread: Initiates outgoing Wi-Fi Direct connections
+    - WifiDirectBroadcastReceiver: Handles Wi-Fi Direct events
 
-## 🔧 Technical Specifications
+  Bluetooth Mesh
+    - BluetoothServerThread: Accepts multiple simultaneous Bluetooth connections (up to 7)
+    - BluetoothClientThread: Manages outgoing Bluetooth connections
+    - BluetoothBroadcastReceiver: Handles Bluetooth discovery and pairing events
 
+2. Routing Layer (com.example.dtn.routing)
+  Epidemic Routing
+    - Floods messages to all encountered peers
+    - Maximizes delivery probability
+    - Higher network overhead
+
+  Spray-and-Wait Routing
+    - Distributes limited message copies (initial count: 6)
+    - Spray Phase: Splits copies among peers (binary spray)
+    - Wait Phase: Holds message until destination is met
+    - Lower network overhead, controlled replication
+
+3. Data Layer (com.example.dtn.data)
+  Entities
+    - Message: Stores DTN messages with routing metadata
+         - message_id, source_id, destination_id
+         - encrypted_payload, checksum
+         - hop_count, copy_count, ttl_timestamp
+         - is_delivered (delivery tracking)
+
+    - Friend: Stores trusted peers for routing decisions
+         - device_id, friendly_name
+         - last_encountered_timestamp
+
+DAOs (Data Access Objects)
+    - MessageDao: CRUD operations for messages
+    - FriendDao: CRUD operations for friends
+
+4. Security Layer (com.example.dtn.security)
+
+  CryptoUtils:
+      - AES-256-CBC encryption
+      - HMAC-SHA256 message authentication
+      - Checksum validation
+
+5. Utilities (com.example.dtn.utils)
+    - Logger: File-based logging with rotation (5MB per file, max 3 files)
+
+## 🔄 Message Flow
+**Sending a Message**
+```
+1. User types message in UI
+          ↓
+2. Encrypt plaintext (AES-256)
+          ↓
+3. Generate checksum (SHA-256)
+          ↓
+4. Create Message object
+   - Set source_id (own device)
+   - Set destination_id (recipient)
+   - Set TTL (2 hours default)
+   - Set copy_count (protocol-specific)
+          ↓
+5. Store in local database
+          ↓
+6. Transmit to connected peers
+   - Via BluetoothServerThread (broadcast to all clients)
+   - Via BluetoothClientThread (send to server)
+          ↓
+7. Update UI with delivery status
+```
+**Receiving a Message**
+```
+1. Message received from network thread
+          ↓
+2. Handler passes to main thread
+          ↓
+3. Validate checksum (detect tampering)
+          ↓
+4. Check for duplicates (by message_id)
+          ↓
+5. Check destination:
+   
+   If FOR ME:
+     - Decrypt payload
+     - Display in chat
+     - Mark as delivered
+     - Send ACK back to sender
+   
+   If NOT FOR ME:
+     - Increment hop_count
+     - Check hop limit (max 15)
+     - Forward to connected peers
+          ↓
+6. Store/Update in database
+```
+**Forwarding Logic (Mesh Routing)**
+```
+1. Peer connection established
+          ↓
+2. Trigger forwarding logic (after 2s delay)
+          ↓
+3. Query database for messages to forward:
+   - TTL not expired
+   - Not yet delivered
+          ↓
+4. Apply routing protocol:
+   
+   EPIDEMIC:
+     - Send ALL messages to peer
+   
+   SPRAY-AND-WAIT:
+     - If copy_count > 1: Split copies (spray phase)
+     - If copy_count = 1: Send only to destination (wait phase)
+          ↓
+5. Transmit messages
+          ↓
+6. Update hop_count and copy_count in database
+```
+### 🌐 Connection Management
+**Bluetooth Mesh (Primary)**
+```
+Device A (Server + Client)  ←→  Device B (Server + Client)
+    ↓                               ↓
+Device C (Server + Client)  ←→  Device D (Server + Client)
+```
+
+**Wi-Fi Direct (Fallback)**
+```
+Group Owner (Server)  ←→  Client
+```
+
+###🔐 Security Architecture
+**Encryption Flow**
+```
+Plaintext Message
+      ↓
+Generate random IV (16 bytes)
+      ↓
+Encrypt with AES-256-CBC
+      ↓
+Generate HMAC-SHA256 (32 bytes)
+      ↓
+Combine: [IV | Ciphertext | HMAC]
+      ↓
+Store/Transmit
+```
+
+**Decryption Flow**
+```
+Received: [IV | Ciphertext | HMAC]
+      ↓
+Extract components
+      ↓
+Validate HMAC (prevent tampering)
+      ↓
+Decrypt with AES-256-CBC using IV
+      ↓
+Return plaintext
+```
 ### Technology Stack
 
 - **Language**: Java
@@ -77,257 +230,90 @@ A fully functional Android messaging application that operates without internet 
 - **Networking**: Wi-Fi Direct (Wi-Fi Peer-to-Peer)
 - **Architecture**: MVVM-inspired with Repository pattern
 
-### Database Schema
+###📊 Database Schema
 
 #### Messages Table
+```
 CREATE TABLE messages (
-message_id TEXT PRIMARY KEY,
-source_id TEXT,
-destination_id TEXT,
-encrypted_payload BLOB,
-checksum TEXT,
-priority INTEGER,
-ttl_timestamp INTEGER,
-hop_count INTEGER,
-copy_count INTEGER,
-is_delivered INTEGER,
-message_type INTEGER,
-timestamp INTEGER
+    message_id TEXT PRIMARY KEY,
+    message_type INTEGER,           -- 0=DATA, 1=ACK
+    source_id TEXT,
+    destination_id TEXT,
+    encrypted_payload BLOB,
+    checksum TEXT,
+    priority INTEGER,               -- 0=NORMAL, 1=HIGH
+    ttl_timestamp INTEGER,
+    hop_count INTEGER,
+    copy_count INTEGER,
+    is_delivered INTEGER            -- 0=false, 1=true
 );
+```
 
 
 #### Friends Table
+```
 CREATE TABLE friends (
-deviceId TEXT PRIMARY KEY,
-friendlyName TEXT,
-lastEncounteredTimestamp INTEGER
+    device_id TEXT PRIMARY KEY,
+    friendly_name TEXT,
+    last_encountered_timestamp INTEGER
 );
-
-
-### Routing Protocols
-
-#### 1. Epidemic Routing
-- **Strategy**: Flood the network with message copies
-- **Delivery Probability**: Very High (>90%)
-- **Network Overhead**: High
-- **Best For**: Sparse networks, critical messages
-
-#### 2. Spray-and-Wait
-- **Strategy**: Spray L copies, then wait for direct delivery
-- **Delivery Probability**: High (70-85%)
-- **Network Overhead**: Bounded (L copies max)
-- **Best For**: Dense networks, bandwidth conservation
-
-### Security Features
-
-- **Encryption Algorithm**: AES-256 (CBC mode)
-- **Key Derivation**: PBKDF2 with 65536 iterations
-- **Data Integrity**: SHA-256 checksum verification
-- **Message Authentication**: Checksum validation before processing
-
-## 📋 Prerequisites
-
-- Android device with Wi-Fi Direct support (most devices since Android 4.0)
-- Android Studio (for building from source)
-- Minimum Android 7.0 (API 24)
-
-## 🚀 Installation
-
-### Option 1: Clone and Build
-Open in Android Studio
-cd dtn-messenger
-
-File → Open → Select project folder
-Build and run
-Click the green "Run" button or press Shift+F10
-
-
-### Option 2: Direct APK Installation
-
-1. Download the latest APK from [Releases](https://github.com/yourusername/dtn-messenger/releases)
-2. Enable "Install from Unknown Sources" on your Android device
-3. Install the APK
-
-## 📱 Usage
-
-### Quick Start
-
-1. **Launch the App** on multiple devices (minimum 2 devices)
-2. **Grant Permissions** when prompted:
-   - Location (Android 12 and below)
-   - Nearby Wi-Fi Devices (Android 13+)
-3. **Discover Peers**: Wait for nearby devices to appear in the peer list
-4. **Connect**: Tap on a peer device to establish connection
-5. **Send Message**: Type your message and press Send
-
-### Multi-Hop Messaging
-
-1. **Add Friends**: Long-press on a peer device and select "Add Friend"
-2. **Send to Offline Device**: Select destination from friend list
-3. **Message Forwarding**: Message automatically hops through intermediate devices
-4. **Delivery Confirmation**: Checkmark (✓) appears when delivered
-
-### Routing Protocol Selection
-
-- **Menu → Epidemic Routing**: For maximum delivery probability
-- **Menu → Spray-and-Wait**: For network efficiency
-
-## 📊 Performance Metrics
-
-| Metric | Value |
-|--------|-------|
-| **Connection Establishment** | 2-5 seconds |
-| **Message Delivery Rate** | 85-95% (2-3 hops) |
-| **Encryption Overhead** | <50ms per message |
-| **Max Communication Range** | 100+ meters (Wi-Fi Direct limit) |
-| **Storage per Message** | ~500 bytes |
-| **Maximum Hops Tested** | 5 hops |
-| **TTL (Time To Live)** | 2 hours (configurable) |
-
-## 🗂️ Project Structure
-
-```
-com.example.dtn/
-│
-├── MainActivity.java                          # Main UI and app orchestration
-│
-├── data/                                      # Data Layer (Database)
-│   ├── Message.java                           # Message entity (table schema)
-│   ├── MessageDao.java                        # Message database operations
-│   ├── Friend.java                            # Friend entity (table schema)
-│   ├── FriendDao.java                         # Friend database operations
-│   └── AppDatabase.java                       # Room database configuration
-│
-├── network/                                   # Network Layer (Communication)
-│   ├── ServerThread.java                      # TCP server (Group Owner)
-│   ├── ClientThread.java                      # TCP client (Group Client)
-│   └── WifiDirectBroadcastReceiver.java       # Wi-Fi P2P event listener
-│
-├── routing/                                   # Routing Layer (Business Logic)
-│   ├── RoutingProtocol.java                   # Routing interface
-│   ├── EpidemicRouting.java                   # Epidemic routing implementation
-│   └── SprayAndWaitRouting.java               # Spray-and-Wait implementation
-│
-├── security/                                  # Security Layer
-│   └── CryptoUtils.java                       # AES-256 encryption/decryption
-│
-└── utils/                                     # Utilities Layer
-    └── Logger.java                            # Event logging system
 ```
 
-### Package Descriptions
 
-#### 📊 `data/` - Persistence Layer
-Handles all database operations using Room ORM. Contains entity classes (database tables) and DAO interfaces (data access methods).
+### 🚀 Application Lifecycle
 
-#### 🌐 `network/` - Communication Layer
-Manages Wi-Fi Direct connections and socket communication between devices. ServerThread handles incoming connections, ClientThread initiates outgoing connections.
-
-#### 🧭 `routing/` - Routing Logic Layer
-Implements DTN routing protocols. Uses Strategy pattern to allow switching between Epidemic and Spray-and-Wait algorithms at runtime.
-
-#### 🔐 `security/` - Security Layer
-Provides encryption/decryption utilities and data integrity verification using AES-256 and SHA-256.
-
-#### 🛠️ `utils/` - Helper Layer
-Contains utility classes for logging, debugging, and shared functionality across the app.
+**Initialization (onCreate)**
+```
+1. Load saved preferences (protocol, transport)
+      ↓
+2. Initialize UI components
+      ↓
+3. Initialize Room database
+      ↓
+4. Initialize device ID (Bluetooth name or Android ID)
+      ↓
+5. Initialize logger and handler
+      ↓
+6. Initialize Wi-Fi Direct and Bluetooth
+      ↓
+7. Request permissions
+      ↓
+8. Start transport layer (Wi-Fi Direct or Bluetooth)
+      ↓
+9. Begin continuous discovery
+      ↓
+10. Load existing messages from database
 ```
 
-***
+** Runtime Operation **
+```
+┌─────────────────────────────────────────┐
+│  Continuous Discovery (every 120s)      │
+│  - Discover new peers                   │
+│  - Auto-connect to friends              │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│  Connection Established                 │
+│  - Register in active connections       │
+│  - Trigger forwarding logic             │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│  Message Exchange                       │
+│  - Receive messages                     │
+│  - Forward messages (routing protocol)  │
+│  - Send ACKs for delivered messages     │
+└─────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────┐
+│  Connection Lost                        │
+│  - Clean up dead connection             │
+│  - Maintain mesh density                │
+│  - Retry discovery if needed            │
+└─────────────────────────────────────────┘
+```
 
-## 🎨 **Alternative Visual Structure (Even Cleaner)**
-
-If you want a more visual representation, use this version
-
-
-
-## 🔐 Security Considerations
-
-### Current Implementation
-
-- ✅ AES-256 encryption for all messages
-- ✅ SHA-256 integrity verification
-- ✅ Hardcoded shared key (suitable for demo/research)
-
-### Production Recommendations
-
-- ⚠️ Implement Diffie-Hellman key exchange
-- ⚠️ Add digital signatures for authentication
-- ⚠️ Use secure key storage (Android Keystore)
-- ⚠️ Implement perfect forward secrecy
-
-## 🐛 Known Issues & Limitations
-
-- **Device Compatibility**: OPPO/Realme devices may have restricted Wi-Fi Direct API access due to ColorOS limitations
-- **Battery Consumption**: Wi-Fi Direct keeps radio active, consuming battery
-- **Range Limitation**: Wi-Fi Direct limited to ~100 meters line-of-sight
-- **Group Size**: Wi-Fi Direct supports max 8 devices in a group
-- **Connection Stability**: Connections may drop when app is backgrounded on some devices
-
-## 🛠️ Troubleshooting
-
-### Devices Can't Find Each Other
-
-1. Ensure Wi-Fi and Location are enabled
-2. Grant all app permissions
-3. Disable battery optimization for the app
-4. Try restarting Wi-Fi on both devices
-
-### Messages Not Showing
-
-1. Check if `ownDeviceId` is properly initialized
-2. Verify destination_id matches in database
-3. Check logcat for delivery events
-
-### Connection Drops
-
-1. Keep both devices unlocked and app in foreground
-2. Disable battery saver mode
-3. Ensure devices are within 10-50 meters
-
-## 📚 Documentation
-
-- [Android Wi-Fi Direct Guide](https://developer.android.com/guide/topics/connectivity/wifip2p)
-- [Room Database Guide](https://developer.android.com/training/data-storage/room)
-- [DTN Research Papers](docs/references.md)
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 👨‍💻 Author
-
-**Your Name**
-- GitHub: [akrittt](https://github.com/akrittt)
-- Email: akritttgupta@gmail.com
-
-## 🙏 Acknowledgments
-
-- Inspired by DTN research papers on Epidemic and Spray-and-Wait routing
-- Android Wi-Fi Direct documentation and sample code
-- Open-source community for libraries and tools
-
-## 🚀 Future Enhancements
-
-- [ ] Public-key cryptography (RSA/ECC)
-- [ ] Adaptive routing based on network conditions
-- [ ] Battery optimization algorithms
-- [ ] Mesh networking support
-- [ ] iOS version (Multipeer Connectivity)
-- [ ] Group messaging
-- [ ] File transfer support
-- [ ] Message compression
-- [ ] Network visualization
 
 
 
