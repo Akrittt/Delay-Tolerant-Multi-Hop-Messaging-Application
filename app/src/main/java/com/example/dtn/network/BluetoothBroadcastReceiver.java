@@ -54,7 +54,6 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             // Check if already discovered
             synchronized (discoveredAddresses){
                 if (discoveredAddresses.contains(deviceAddress)) {
-                    Log.d(TAG, "Device already in list: " + deviceAddress);
                     return;
                 }
             }
@@ -91,7 +90,7 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             }
 
             // Check if DTN-compatible
-            if (!activity.isAndroidPhoneWithDTN(device)) {
+            if (!activity.isDTNDevice(device)) {
                 Log.d(TAG, "✗ Skipped non-DTN device: " + device.getName());
                 return;
             }

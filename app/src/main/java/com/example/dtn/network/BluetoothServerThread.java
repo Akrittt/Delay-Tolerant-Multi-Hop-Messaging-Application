@@ -231,7 +231,7 @@ public class BluetoothServerThread extends Thread {
             if (!activeClients.isEmpty()) {
                 ClientHandler firstClient = activeClients.get(0);
                 if (firstClient != null && firstClient.deviceAddress != null) {
-                    return firstClient.deviceAddress;
+                    return firstClient.deviceName;
                 }
             }
         }

@@ -35,7 +35,7 @@ public class BluetoothClientThread extends Thread {
     private volatile boolean running = true;
     private volatile boolean connected = false;
 
-    // ✅ MESH FIX: Track device info
+    // Track device info
     private final String deviceAddress;
     private final String deviceName;
 
@@ -44,7 +44,7 @@ public class BluetoothClientThread extends Thread {
         this.handler = handler;
         this.deviceAddress = device.getAddress();
 
-        // ✅ MESH FIX: Safe device name retrieval
+        // Safe device name retrieval
         String name = "Unknown";
         try {
             name = device.getName();
@@ -80,7 +80,7 @@ public class BluetoothClientThread extends Thread {
                 } catch (SecurityException e) {
                     Log.e(TAG, "✗✗✗ SecurityException: BLUETOOTH_CONNECT permission denied!", e);
                     if (handler != null) {
-                        // ✅ MESH FIX: Send device address in message
+                        // Send device address in message
                         android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
                         msg.obj = deviceAddress;
                         handler.sendMessage(msg);

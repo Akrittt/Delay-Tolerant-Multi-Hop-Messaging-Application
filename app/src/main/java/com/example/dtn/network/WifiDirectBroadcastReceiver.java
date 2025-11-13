@@ -128,8 +128,8 @@ public class WifiDirectBroadcastReceiver extends BroadcastReceiver {
             }
 
             if (device != null && device.deviceName != null ) {
-                activity.ownDeviceId = device.deviceName;
-                Log.d(TAG, "This device MAC: " + device.deviceName);
+                activity.ownDeviceId = device.deviceAddress;
+                Log.d(TAG, "This device MAC: " + device.deviceAddress);
 
                 SharedPreferences prefs = activity.getSharedPreferences(PREFS_NAME, 0);
                 prefs.edit().putString("ACTUAL_DEVICE_MAC", activity.ownDeviceId).apply();
