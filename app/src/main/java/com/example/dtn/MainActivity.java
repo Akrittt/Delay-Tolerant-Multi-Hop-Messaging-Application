@@ -117,7 +117,7 @@ public class MainActivity extends AppCompatActivity {
     String[] deviceNameArray;
     WifiP2pDevice[] deviceArray;
     private boolean isWifiDirectReceiverRegistered = false;
-    private List<BluetoothDevice> discoveredDevices = new ArrayList<>();
+    private final CopyOnWriteArrayList <BluetoothDevice> discoveredDevices = new CopyOnWriteArrayList<>();
 
     // --- Transport Selection ---
     private enum TransportType {WIFI_DIRECT, BLUETOOTH}
@@ -174,6 +174,9 @@ public class MainActivity extends AppCompatActivity {
     private static final int MIN_MESH_CONNECTIONS = 2; // Minimum for mesh
     private Map<String, Long> connectionAttempts = new ConcurrentHashMap<>();
     private static final long CONNECTION_RETRY_DELAY = 30000; // 30 seconds
+    private boolean isInitialized = false;
+    private boolean isDiscoverableDialogShown = false;
+    private boolean isPermissionDialogShown = false;
 
     public static class ChatMessage {
         String text;
@@ -254,6 +257,12 @@ public class MainActivity extends AppCompatActivity {
         selectBestTransport();
         Log.d(TAG, "✅ Selected transport: " + activeTransport);
 
+        if (!hasAllRequiredPermissions()) {
+            Log.d(TAG, "Permissions not granted, will request in onResume");
+        } else {
+            Log.d(TAG, "✅ All permissions already granted");
+            isInitialized = true; // Mark as initialized
+        }
 
 
     }
@@ -263,15 +272,19 @@ public class MainActivity extends AppCompatActivity {
      * Called after permissions are granted to complete initialization
      */
     private void completeInitialization() {
+        if(isInitialized){
+            return;
+        }
+
         Log.d(TAG, "═══════════════════════════════════════");
         Log.d(TAG, "  Completing initialization...");
         Log.d(TAG, "═══════════════════════════════════════");
 
         // Make Bluetooth discoverable
-        if (activeTransport == TransportType.BLUETOOTH) {
+        if (activeTransport == TransportType.BLUETOOTH && !isDiscoverableDialogShown) {
             makeBluetoothDiscoverable();
+            isDiscoverableDialogShown = true;
         }
-
         // Start automatic mesh mode
         startAutomaticMeshMode();
 
@@ -282,6 +295,7 @@ public class MainActivity extends AppCompatActivity {
         statusTextView.setText("Status: Ready");
         statusTextView.setTextColor(0xFF4CAF50); // Green
 
+        isInitialized = true;
         Log.d(TAG, "✅ Initialization complete");
         Log.d(TAG, "═══════════════════════════════════════");
     }
@@ -728,13 +742,12 @@ public class MainActivity extends AppCompatActivity {
             Log.d(TAG, "Active Transport: " + activeTransport);
 
             if (activeTransport == TransportType.WIFI_DIRECT) {
-                Log.d(TAG, "Attempting Wi-Fi Direct connection...");
                 connectToWifiDirectDevice(position);
 
             } else { // BLUETOOTH
                 Log.d(TAG, "Attempting Bluetooth connection...");
 
-                // ✅ FIX: Proper null checks
+                //  null checks
                 if (discoveredDevices == null) {
                     Log.e(TAG, "discoveredDevices is NULL");
                     Toast.makeText(this, "No devices discovered", Toast.LENGTH_SHORT).show();
@@ -753,7 +766,7 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
 
-                // ✅ Get device from list
+                // Get device from list
                 BluetoothDevice device = discoveredDevices.get(position);
 
                 if (device == null) {
@@ -762,29 +775,11 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
 
-                // ✅ Get device name safely
-                String deviceName = "Unknown";
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
-                                == PackageManager.PERMISSION_GRANTED) {
-                            deviceName = device.getName();
-                        }
-                    } else {
-                        deviceName = device.getName();
-                    }
-
-                    if (deviceName == null || deviceName.isEmpty()) {
-                        deviceName = "Device_" + device.getAddress().replace(":", "");
-                    }
-                } catch (SecurityException e) {
-                    Log.e(TAG, "SecurityException getting device name", e);
-                    deviceName = "Device_" + device.getAddress().replace(":", "");
-                }
-
+                // Get device name safely
+                String deviceName = getBluetoothDeviceName(device);
                 Log.d(TAG, "Selected device: " + deviceName + " (" + device.getAddress() + ")");
 
-                // ✅ Show confirmation and connect
+                // Show confirmation and connect
                 Toast.makeText(this, "Connecting to " + deviceName + "...", Toast.LENGTH_SHORT).show();
                 connectToBluetoothDevice(device);
             }
@@ -1587,7 +1582,7 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, "  My device name: " + myDeviceName);
         Log.d(TAG, "  Message destination: " + message.destination_id);
 
-        boolean isForMe = (myDeviceName != null && myDeviceName.equals(message.destination_id));
+        boolean isForMe = (myDeviceName != null && myDeviceName.equals(message.destination_id) );
 
         if (isForMe) {
             // ✓ YES - MESSAGE IS FOR ME!
@@ -1964,11 +1959,11 @@ public class MainActivity extends AppCompatActivity {
             enableBluetoothLauncher.launch(enableIntent);
             return;
         }
-        // ✅ Reset receiver's discovery lists
+        // Reset receiver's discovery lists
         if (bluetoothReceiver != null) {
             bluetoothReceiver.resetDiscovery();
         }
-        // ✅ Clear UI list
+        // Clear UI list
         discoveredDevices.clear();
 
         runOnUiThread(() -> {
@@ -1986,7 +1981,7 @@ public class MainActivity extends AppCompatActivity {
             Log.e(TAG, "Cannot get local address", e);
         }
 
-        // ✅ STRATEGY 1: Get Paired Devices
+        // STRATEGY 1: Get Paired Devices
         try {
             Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
 
@@ -2029,40 +2024,44 @@ public class MainActivity extends AppCompatActivity {
             Log.e(TAG, "Permission denied for paired devices", e);
         }
 
-        // ✅ STRATEGY 2: Classic Bluetooth Discovery
+        // STRATEGY 2: Classic Bluetooth Discovery
         Log.d(TAG, "Starting active Bluetooth discovery...");
 
-        try {
-            // Cancel existing discovery
-            if (bluetoothAdapter.isDiscovering()) {
-                bluetoothAdapter.cancelDiscovery();
-                Log.d(TAG, "Cancelled existing discovery");
+        if(discoveredDevices.size() < 2){
+            try {
+                // Cancel existing discovery
+                if (bluetoothAdapter.isDiscovering()) {
+                    bluetoothAdapter.cancelDiscovery();
+                    Log.d(TAG, "Cancelled existing discovery");
 
-                // Wait briefly
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                    // Wait briefly
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
+
+                // Start new discovery
+                boolean started = bluetoothAdapter.startDiscovery();
+
+                if (started) {
+                    Log.d(TAG, "✓ Active discovery started");
+                    runOnUiThread(() -> {
+                        statusTextView.setText("Status: Scanning for new devices...");
+                    });
+                } else {
+                    Log.w(TAG, "✗ Failed to start active discovery");
+                }
+
+            } catch (Exception e) {
+                Log.e(TAG, "Active discovery failed", e);
             }
-
-            // Start new discovery
-            boolean started = bluetoothAdapter.startDiscovery();
-
-            if (started) {
-                Log.d(TAG, "✓ Active discovery started");
-                runOnUiThread(() -> {
-                    statusTextView.setText("Status: Scanning for new devices...");
-                });
-            } else {
-                Log.w(TAG, "✗ Failed to start active discovery");
-            }
-
-        } catch (Exception e) {
-            Log.e(TAG, "Active discovery failed", e);
+        }else {
+            Log.d(TAG, "✅ Skipping active discovery - already have " + discoveredDevices.size() + " devices");
         }
 
-        // ✅ STRATEGY 3: BLE Scan (if supported)
+        // STRATEGY 3: BLE Scan (if supported)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             Log.d(TAG, "Starting BLE advertising and scan...");
             startBLEAdvertising();
@@ -2473,7 +2472,7 @@ public class MainActivity extends AppCompatActivity {
                             "Failed to connect to " + deviceName, Toast.LENGTH_SHORT).show();
                 });
             }
-        }, 5000);
+        }, 3000);
     }
 
 
@@ -2621,10 +2620,23 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // Check permissions AFTER activity is fully created
-        if (hasAllRequiredPermissions()) {
-            completeInitialization();
+//        if (hasAllRequiredPermissions()) {
+////            completeInitialization();
+////        } else {
+////            checkAndRequestPermissions();
+////        }
+
+        if (!isInitialized) {
+            if (hasAllRequiredPermissions()) {
+                Log.d(TAG, "Permissions granted, completing initialization...");
+                completeInitialization();
+                isInitialized = true; // Mark as done
+            } else {
+                Log.d(TAG, "Requesting permissions...");
+                checkAndRequestPermissions();
+            }
         } else {
-            checkAndRequestPermissions();
+            Log.d(TAG, "Already initialized, skipping");
         }
     }
 
@@ -3202,8 +3214,8 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // ✅ FIX: Update the main list reference
-        this.discoveredDevices = new ArrayList<>(devices);
+        discoveredDevices.clear();
+        discoveredDevices.addAll(devices);
 
         Log.d(TAG, "updateBluetoothDeviceList called with " + devices.size() + " devices");
 
@@ -3270,20 +3282,30 @@ public class MainActivity extends AppCompatActivity {
         return isAndroidPhoneWithDTN(device);
     }
     public void onBluetoothDiscoveryFinished(List<BluetoothDevice> devices) {
+        if(devices == null){
+            devices = new ArrayList<>();
+        }
 
         Log.d(TAG, "onBluetoothDiscoveryFinished: Found " + devices.size() + " devices");
+        discoveredDevices.clear();
+        discoveredDevices.addAll(devices);
 
         runOnUiThread(() -> {
-            statusTextView.setText("Status: Found " + devices.size() + " devices");
+            statusTextView.setText("Status: Found " + discoveredDevices.size() + " devices");
 
-            if (devices.size() > 0) {
+            if (discoveredDevices.size() > 0) {
                 Toast.makeText(MainActivity.this,
-                        "✓ Found " + devices.size() + " device(s)",
+                        "✓ Found " + discoveredDevices.size() + " device(s)",
                         Toast.LENGTH_SHORT).show();
             } else {
                 Toast.makeText(MainActivity.this,
                         "No devices found",
                         Toast.LENGTH_SHORT).show();
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    if (bluetoothAdapter != null && bluetoothAdapter.isEnabled()) {
+                        startBluetoothDiscovery();
+                    }
+                }, 5000);
             }
         });
     }
@@ -3307,6 +3329,12 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        if (isDiscoverableDialogShown) {
+            Log.d(TAG, "Discoverable dialog already shown, skipping");
+            return;
+        }
+
+
         // Permission check for Android 12+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE)
@@ -3328,6 +3356,7 @@ public class MainActivity extends AppCompatActivity {
         if (scanMode == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE) {
             Log.d(TAG, "✅ Device is ALREADY discoverable - skipping dialog");
             Toast.makeText(this, "Device is already discoverable", Toast.LENGTH_SHORT).show();
+            isDiscoverableDialogShown = true ;
             return; // DON'T show dialog again!
         }
 
@@ -3339,6 +3368,7 @@ public class MainActivity extends AppCompatActivity {
 
         try {
             discoverableLauncher.launch(discoverableIntent);
+            isDiscoverableDialogShown = true;
             Log.d(TAG, "✅ Discoverable intent launched");
         } catch (Exception e) {
             Log.e(TAG, "❌ Error launching discoverable intent", e);
@@ -3386,8 +3416,8 @@ public class MainActivity extends AppCompatActivity {
                     startWifiDirectDiscovery();
                 }
 
-                // Repeat every 30 seconds
-                discoveryHandler.postDelayed(this, 120000);
+                // Repeat every 60n j.00 seconds
+                discoveryHandler.postDelayed(this, 60000);
             }
         };
 
@@ -3402,12 +3432,12 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // ✅ MESH FIX: Clean up dead connections first
+        // Clean up dead connections first
         cleanupDeadConnections();
 
         int currentConnections = getTotalActiveConnections();
 
-        // ✅ MESH FIX: Try to maintain optimal mesh density
+        // Try to maintain optimal mesh density
         if (currentConnections >= MIN_MESH_CONNECTIONS && currentConnections < MAX_CLIENT_CONNECTIONS) {
             Log.d(TAG, "Mesh density acceptable: " + currentConnections + " connections");
             // Continue connecting to build denser mesh
@@ -3424,7 +3454,7 @@ public class MainActivity extends AppCompatActivity {
 
             Log.d(TAG, "Auto-connecting: " + friendAddresses.size() + " friends in database");
 
-            // ✅ MESH FIX: Connect to multiple friends, not just first
+            // Connect to multiple friends, not just first
             int connectionsAttempted = 0;
 
             for (BluetoothDevice device : discoveredDevices) {
@@ -3458,7 +3488,7 @@ public class MainActivity extends AppCompatActivity {
 
                 // Add delay between connection attempts
                 try {
-                    Thread.sleep(2000);
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;

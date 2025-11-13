@@ -22,8 +22,8 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
     private static final String TAG = "BluetoothBroadcastReceiver";
 
     private final MainActivity activity;
-    private List<BluetoothDevice> discoveredDevices = Collections.synchronizedList(new ArrayList<>());
-    private Set<String> discoveredAddresses = Collections.synchronizedSet(new HashSet<>());
+    private final List<BluetoothDevice> discoveredDevices = Collections.synchronizedList(new ArrayList<>());
+    private final Set<String> discoveredAddresses = Collections.synchronizedSet(new HashSet<>());
 
     public BluetoothBroadcastReceiver(MainActivity activity) {
         this.activity = activity;
@@ -51,10 +51,12 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
 
             String deviceAddress = device.getAddress();
 
-            // ✅ Check if already discovered
-            if (discoveredAddresses.contains(deviceAddress)) {
-                Log.d(TAG, "Device already in list: " + deviceAddress);
-                return;
+            // Check if already discovered
+            synchronized (discoveredAddresses){
+                if (discoveredAddresses.contains(deviceAddress)) {
+                    Log.d(TAG, "Device already in list: " + deviceAddress);
+                    return;
+                }
             }
 
             // GET LOCAL ADDRESS
@@ -69,13 +71,13 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
                 }
             }
 
-            // ✅ Skip self device
+            // Skip self device
             if (localAddress != null && device.getAddress().equals(localAddress)) {
                 Log.d(TAG, "✗ Skipped self-device: " + localAddress);
                 return;
             }
 
-            // ✅ Check by name too
+            // Check by name too
             try {
                 String localName = adapter != null ? adapter.getName() : null;
                 String deviceName = device.getName();
@@ -88,15 +90,17 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
                 Log.w(TAG, "Cannot compare device names", e);
             }
 
-            // ✅ Check if DTN-compatible
+            // Check if DTN-compatible
             if (!activity.isAndroidPhoneWithDTN(device)) {
                 Log.d(TAG, "✗ Skipped non-DTN device: " + device.getName());
                 return;
             }
 
-            // ✅ ADD to list
-            discoveredDevices.add(device);
-            discoveredAddresses.add(deviceAddress);
+            // ADD to list
+            synchronized (discoveredDevices){
+                discoveredDevices.add(device);
+                discoveredAddresses.add(deviceAddress);
+            }
 
             String devName = "Unknown";
             try {
@@ -105,11 +109,10 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             } catch (SecurityException e) {
                 Log.w(TAG, "Cannot get device name", e);
             }
-
             Log.d(TAG, "✓ Added device: " + devName + " (" + deviceAddress + ")");
 
-            // ✅ Update UI immediately
-            activity.updateBluetoothDeviceList(new ArrayList<>(discoveredDevices));
+            // Update UI immediately
+            activity.updateBluetoothDeviceList(getDiscoveredDevicesCopy());
         }
 
         // 2. DISCOVERY FINISHED
@@ -117,14 +120,22 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             Log.d(TAG, "=== Discovery Finished ===");
             Log.d(TAG, "Total devices found: " + discoveredDevices.size());
 
-            // ✅ Final update
-            activity.onBluetoothDiscoveryFinished(new ArrayList<>(discoveredDevices));
-            activity.updateBluetoothDeviceList(new ArrayList<>(discoveredDevices));
+            int deviceCount;
+            synchronized (discoveredDevices){
+                deviceCount = discoveredDevices.size();
+            }
 
-            // ✅ Auto-connect if devices found
-            if (!discoveredDevices.isEmpty()) {
+            Log.d(TAG, "Total devices found: " + deviceCount);
+
+            // update with copy
+            List<BluetoothDevice> devicesCopy = getDiscoveredDevicesCopy();
+            activity.onBluetoothDiscoveryFinished(devicesCopy);
+            activity.updateBluetoothDeviceList(devicesCopy);
+
+            // Auto-connect if devices found
+            if (deviceCount >  0){
                 Log.d(TAG, "Starting auto-connect...");
-                activity.autoConnectToFriends(new ArrayList<>(discoveredDevices));
+                activity.autoConnectToFriends(devicesCopy);
             } else {
                 Log.d(TAG, "No devices found - skipping auto-connect");
             }
@@ -137,9 +148,8 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             switch (state) {
                 case BluetoothAdapter.STATE_OFF:
                     Log.w(TAG, "Bluetooth turned OFF");
-                    // ✅ Clear lists when BT disabled
-                    discoveredDevices.clear();
-                    discoveredAddresses.clear();
+                    // Clear lists when BT disabled
+                    resetDiscovery();
                     activity.onBluetoothStateChanged(false);
                     break;
 
@@ -154,9 +164,7 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
 
                 case BluetoothAdapter.STATE_TURNING_OFF:
                     Log.d(TAG, "Bluetooth turning off...");
-                    // ✅ Clear lists when turning off
-                    discoveredDevices.clear();
-                    discoveredAddresses.clear();
+                    resetDiscovery();
                     break;
             }
         }
@@ -188,11 +196,24 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
     }
 
     /**
-     * ✅ NEW: Reset discovery for fresh scan
+     * Reset discovery for fresh scan
      */
     public void resetDiscovery() {
         Log.d(TAG, "Resetting discovery lists");
-        discoveredDevices.clear();
-        discoveredAddresses.clear();
+        synchronized (discoveredDevices) {
+            discoveredDevices.clear();
+            discoveredAddresses.clear();
+        }
     }
+
+    /**
+     * Get thread-safe copy of discovered devices
+     */
+    public List<BluetoothDevice> getDiscoveredDevicesCopy() {
+        synchronized (discoveredDevices) {
+            return new ArrayList<>(discoveredDevices);
+        }
+    }
+
+
 }
