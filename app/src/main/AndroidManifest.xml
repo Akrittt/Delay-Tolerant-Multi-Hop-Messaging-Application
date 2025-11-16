@@ -49,25 +49,6 @@
         tools:targetApi="s" />
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Storage Permissions (For logging)
-    ════════════════════════════════════════════════════════════════════ -->
-
-    <!-- Android 9 and below (API 28 and below) -->
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-
-    <!-- Android 10+ needs READ permission for accessing files -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-
-    <!-- Android 13+ needs specific media permissions -->
-    <uses-permission
-        android:name="android.permission.READ_MEDIA_IMAGES"
-        tools:targetApi="tiramisu" />
-
-    <!-- ═══════════════════════════════════════════════════════════════════
             Hardware Feature Requirements
        ════════════════════════════════════════════════════════════════════ -->
 

@@ -279,8 +279,8 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // FAIL - Cannot get device name
-        Log.e(TAG, "❌ FAILED to initialize device name!");
-        Log.e(TAG, "Please set your Bluetooth device name manually in Android settings");
+        Log.w(TAG, "❌ FAILED to initialize device name!");
+        Log.w(TAG, "Please set your Bluetooth device name manually in Android settings");
         ownDeviceId = "02:00:00:00:00:00"; // Keep as invalid marker
 
     }
@@ -309,13 +309,13 @@ public class MainActivity extends AppCompatActivity {
         initializeDatabase();
         Log.d(TAG, "✅ Database initialized");
 
-        initializeMyDeviceName();
-        if (ownDeviceId != null && !ownDeviceId.isEmpty()) {
-            isDeviceIdReady = true;
-            Log.d(TAG, "✅ Device ID ready: " + ownDeviceId);
-        } else {
-            Log.w(TAG, "⚠️ Device ID not initialized properly");
-        }
+//        initializeMyDeviceName();
+//        if (ownDeviceId != null && !ownDeviceId.isEmpty()) {
+//            isDeviceIdReady = true;
+//            Log.d(TAG, "✅ Device ID ready: " + ownDeviceId);
+//        } else {
+//            Log.w(TAG, "⚠️ Device ID not initialized properly");
+//        }
 
         logger = Logger.getInstance(getApplicationContext());
         initializeHandler();
@@ -1674,13 +1674,13 @@ public class MainActivity extends AppCompatActivity {
                     return;  // ← REJECT MESSAGE
                 }
 
-                // ✓ Checksum valid - message not tampered, continue processing
+                // Checksum valid - message not tampered, continue processing
                 if (ownDeviceId == null || ownDeviceId.isEmpty() || ownDeviceId.equals("02:00:00:00:00:00")) {
                     Log.w(TAG, "⚠️ Device ID not properly initialized: " + ownDeviceId);
                     Log.d(TAG, "Attempting to refresh device ID synchronously...");
 
                     // Wait synchronously for device ID update
-//                    ensureDeviceIdIsSet();
+                    ownDeviceId = getMyDeviceName();
                     Log.d(TAG, "Device ID after refresh: " + ownDeviceId);
 
                     if (ownDeviceId == null || ownDeviceId.equals("02:00:00:00:00:00")) {
@@ -2714,6 +2714,15 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         Log.d(TAG, "onPause");
+        // Unregister receivers here
+        if (isWifiDirectReceiverRegistered && wifiDirectBroadcastReceiver != null) {
+            unregisterReceiver(wifiDirectBroadcastReceiver);
+            isWifiDirectReceiverRegistered = false;
+        }
+        if (isBluetoothReceiverRegistered && bluetoothReceiver != null) {
+            unregisterReceiver(bluetoothReceiver);
+            isBluetoothReceiverRegistered = false;
+        }
     }
 
     @Override
