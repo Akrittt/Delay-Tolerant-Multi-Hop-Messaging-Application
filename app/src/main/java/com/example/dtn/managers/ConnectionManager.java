@@ -1,10 +1,15 @@
 package com.example.dtn.managers;
 
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.widget.Toast;
+
+import androidx.annotation.RequiresPermission;
 
 import com.example.dtn.data.Friend;
 import com.example.dtn.data.Message;
@@ -21,6 +26,9 @@ import com.example.dtn.routing.SprayAndWaitRouting;
 import com.example.dtn.security.CryptoUtils;
 import com.example.dtn.viewmodel.MainViewModel;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -117,6 +125,10 @@ public class ConnectionManager {
                 // Show toast
                 Toast.makeText(context, "✓ Connected to " + deviceName,
                         Toast.LENGTH_SHORT).show();
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    triggerForwardingLogic();
+                }, 2000);
+
 
                 return true;
             }
@@ -143,6 +155,48 @@ public class ConnectionManager {
         });
 
         Log.d(TAG, "✓ Message handler initialized");
+    }
+
+    private void triggerForwardingLogic() {
+        viewModel.getMessagesToForward(new MessageRepository.RepositoryCallback<List<Message>>() {
+            @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+            @Override
+            public void onSuccess(List<Message> messages) {
+                if (messages == null || messages.isEmpty()) {
+                    Log.d(TAG, "No messages to forward");
+                    return;
+                }
+
+                // Forward via active transport
+                MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
+
+                if (transport == MainViewModel.TransportType.BLUETOOTH) {
+                    // Get connected Bluetooth devices
+                    List<BluetoothDevice> connectedDevices = new ArrayList<>();
+                    // Add logic to get connected devices
+
+                    // Use routing protocol
+                    if ("SPRAY_AND_WAIT".equals(viewModel.getCurrentProtocol().getValue())) {
+                        sprayAndWaitRouting.forwardMessagesToMultipleDevicesBluetooth(
+                                messages, connectedDevices,
+                                bluetoothManager.getServerThread(),
+                                bluetoothManager.getClientThreads()
+                        );
+                    } else {
+                        epidemicRouting.forwardMessagesToMultipleDevicesBluetooth(
+                                messages, connectedDevices,
+                                bluetoothManager.getServerThread(),
+                                bluetoothManager.getClientThreads()
+                        );
+                    }
+                }
+            }
+
+            @Override
+            public void onError(Exception e) {
+                Log.e(TAG, "Error getting messages to forward", e);
+            }
+        });
     }
 
     /**
@@ -191,7 +245,7 @@ public class ConnectionManager {
      */
     public void resume() {
         Log.d(TAG, "ConnectionManager resumed");
-        // TODO: Re-register receivers if needed
+        // TODO: Re-register receivers
     }
 
     /**
@@ -199,7 +253,7 @@ public class ConnectionManager {
      */
     public void pause() {
         Log.d(TAG, "ConnectionManager paused");
-        // TODO: Unregister receivers if needed
+        // TODO: Unregister receivers
     }
 
     /**
@@ -216,15 +270,17 @@ public class ConnectionManager {
             }
 
         } else if (transport == MainViewModel.TransportType.BLUETOOTH) {
-            // Bluetooth connection
-            // TODO: Get device from BluetoothManager and connect
-            Log.d(TAG, "Bluetooth connection at position: " + position);
+            var device = bluetoothManager.getDeviceAtPosition(position);
+            if (device != null) {
+                bluetoothManager.connectToDevice(device);
+            }
         }
     }
 
     /**
      * Add friend at position
      */
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     public void addFriendAtPosition(int position) {
         MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
 
@@ -235,8 +291,21 @@ public class ConnectionManager {
             }
 
         } else if (transport == MainViewModel.TransportType.BLUETOOTH) {
-            // TODO: Get Bluetooth device and add as friend
-            Log.d(TAG, "Add Bluetooth friend at position: " + position);
+            var device = bluetoothManager.getDeviceAtPosition(position);
+            if(device != null){
+                String deviceId = device.getAddress();
+                String deviceName = getDeviceName(device);
+                addFriend(deviceId,deviceName);
+            }
+        }
+    }
+    @SuppressLint("MissingPermission")
+    private String getDeviceName(android.bluetooth.BluetoothDevice device) {
+        try {
+            String name = device.getName();
+            return (name != null && !name.isEmpty()) ? name : device.getAddress();
+        } catch (SecurityException e) {
+            return device.getAddress();
         }
     }
 
@@ -278,10 +347,41 @@ public class ConnectionManager {
                 MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
 
                 if (transport == MainViewModel.TransportType.BLUETOOTH) {
-                    // Send via Bluetooth
-                    // TODO: Get Bluetooth threads and send
-                    Log.d(TAG, "Sending via Bluetooth: " + message.message_id);
+                    BluetoothServerThread btServerThread = bluetoothManager.getServerThread();
+                    List<BluetoothClientThread> btClientThreads = bluetoothManager.getClientThreads();
 
+                    // Send via all connected Bluetooth clients
+                    if (btClientThreads != null) {
+                        for (BluetoothClientThread client : btClientThreads) {
+                            if (client != null && client.isConnected()) {
+                                client.write(message);
+                                sent = true;
+                                devicesSentTo++;
+                            }
+                        }
+                    }
+
+                    // Broadcast via server thread
+                    if (btServerThread != null && btServerThread.isAlive()) {
+                        btServerThread.broadcastToAll(message);
+                        sent = true;
+                        devicesSentTo++;
+                    }
+
+                    final boolean finalSent = sent;
+                    final int finalDevicesSentTo = devicesSentTo;
+
+                    new Handler(Looper.getMainLooper()).post(() -> {
+                        if (finalSent) {
+                            String successMsg = finalDevicesSentTo > 1
+                                    ? "✓ Broadcasted to " + finalDevicesSentTo + " devices"
+                                    : "✓ Message sent";
+                            Toast.makeText(context, successMsg, Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(context, "No active Bluetooth connection - message queued",
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
                 } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
                     // Send via WiFi Direct
                     ServerThread serverThread = wifiDirectManager.getServerThread();
@@ -381,7 +481,23 @@ public class ConnectionManager {
             viewModel.updateMessage(message, null);
 
             // Send ACK
-            // TODO: Generate and send ACK
+            try {
+                Message ackMessage = new Message();
+                ackMessage.message_id = UUID.randomUUID().toString();
+                ackMessage.message_type = Message.TYPE_ACK;
+                ackMessage.source_id = myDeviceId;
+                ackMessage.destination_id = message.source_id;
+                ackMessage.encrypted_payload = CryptoUtils.encrypt(message.message_id);
+                ackMessage.checksum = CryptoUtils.generateChecksum(ackMessage.encrypted_payload);
+                ackMessage.ttl_timestamp = System.currentTimeMillis() + (30 * 60 * 1000); // 30 min
+                ackMessage.hop_count = 0;
+                ackMessage.copy_count = 1;
+
+                sendMessage(ackMessage);
+                Log.d(TAG, "✓ ACK sent for message: " + message.message_id);
+            } catch (Exception e) {
+                Log.e(TAG, "Error sending ACK", e);
+            }
 
         } else {
             // Message not for me - forward

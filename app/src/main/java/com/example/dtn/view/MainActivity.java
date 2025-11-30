@@ -15,6 +15,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.lifecycle.ViewModelProvider;
@@ -44,11 +45,6 @@ import java.util.UUID;
  * - Handle user input events
  * - Delegate business logic to ViewModel
  * - Update UI based on ViewModel state
- *
- * NO LONGER RESPONSIBLE FOR:
- * - Database operations (moved to Repositories)
- * - Business logic (moved to ViewModels)
- * - Complex state management (moved to ViewModels)
  */
 @SuppressLint({"SetTextI18n", "MissingPermission"})
 public class MainActivity extends AppCompatActivity {
@@ -73,6 +69,7 @@ public class MainActivity extends AppCompatActivity {
     private EditText messageEditText;
     private Button sendButton;
     private Spinner prioritySpinner;
+    private Spinner destinationSpinner;
     private Toolbar toolbar;
 
     // ==================== UI Adapters ====================
@@ -132,6 +129,7 @@ public class MainActivity extends AppCompatActivity {
         messageEditText = findViewById(R.id.messageEditText);
         sendButton = findViewById(R.id.sendButton);
         prioritySpinner = findViewById(R.id.prioritySpinner);
+        destinationSpinner = findViewById(R.id.destinationSpinner);
         toolbar = findViewById(R.id.toolbar);
 
         // Setup toolbar
@@ -236,6 +234,15 @@ public class MainActivity extends AppCompatActivity {
             peerAdapter.clear();
             peerAdapter.addAll(peers);
             peerAdapter.notifyDataSetChanged();
+
+            // Update destination spinner
+            List<String> destinations = new ArrayList<>();
+            destinations.add("broadcast");
+            destinations.addAll(peers);
+            ArrayAdapter<String> destAdapter = new ArrayAdapter<>(this,
+                    android.R.layout.simple_spinner_item, destinations);
+            destAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            destinationSpinner.setAdapter(destAdapter);
         });
 
         // Observe device ID
@@ -416,18 +423,18 @@ public class MainActivity extends AppCompatActivity {
 
         // View friends
         if (itemId == R.id.menu_view_friends) {
-            // TODO: Show friends dialog
+            showFriendsDialog();
             Toast.makeText(this, "View Friends - TODO", Toast.LENGTH_SHORT).show();
             return true;
         }
 
         if (itemId == R.id.menu_clear_messages) {
-            //showClearMessagesDialog();
+            showClearMessagesDialog();
             return true;
         }
 
         if (itemId == R.id.menu_about) {
-            //showAboutDialog();
+            showAboutDialog();
             return true;
         }
 
@@ -485,5 +492,63 @@ public class MainActivity extends AppCompatActivity {
         wifiDirectManager.shutdown();
 
         Log.d(TAG, "✓ MainActivity destroyed");
+    }
+
+    private void showFriendsDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Friends List");
+
+        viewModel.getAllFriends().observe(this, friends -> {
+            if (friends == null || friends.isEmpty()) {
+                builder.setMessage("No friends added yet.\nLong press on a peer to add as friend.");
+            } else {
+                String[] friendNames = new String[friends.size()];
+                for (int i = 0; i < friends.size(); i++) {
+                    Friend f = friends.get(i);
+                    friendNames[i] = f.friendlyName + " (" + f.deviceId + ")";
+                }
+                builder.setItems(friendNames, null);
+            }
+
+            builder.setPositiveButton("OK", null);
+            builder.show();
+        });
+    }
+
+    private void showClearMessagesDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Clear All Messages")
+                .setMessage("This will delete all messages and chat history. Continue?")
+                .setPositiveButton("Clear", (dialog, which) -> {
+                    viewModel.clearChatMessages();
+                    MessageRepository.getInstance(this).deleteAll(new MessageRepository.RepositoryCallback<Void>() {
+                        @Override
+                        public void onSuccess(Void result) {
+                            Toast.makeText(MainActivity.this, "Messages cleared", Toast.LENGTH_SHORT).show();
+                        }
+
+                        @Override
+                        public void onError(Exception e) {
+                            Toast.makeText(MainActivity.this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showAboutDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("About DTN Messenger")
+                .setMessage("DTN Messenger v1.0\n\n" +
+                        "A Delay-Tolerant Networking application for Android.\n\n" +
+                        "Features:\n" +
+                        "• Wi-Fi Direct & Bluetooth mesh\n" +
+                        "• Epidemic & Spray-and-Wait routing\n" +
+                        "• AES-256 encryption\n" +
+                        "• Multi-hop message forwarding\n\n" +
+                        "Built with Android SDK 34")
+                .setPositiveButton("OK", null)
+                .show();
     }
 }

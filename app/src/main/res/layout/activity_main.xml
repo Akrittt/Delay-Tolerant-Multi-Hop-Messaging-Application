@@ -154,6 +154,13 @@
                     android:inputType="text"
                     android:maxLines="3"
                     android:paddingEnd="8dp" />
+                <Spinner
+                    android:id="@+id/destinationSpinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Select destination"
+                    android:paddingEnd="8dp" />
 
                 <Button
                     android:id="@+id/sendButton"
