@@ -10,7 +10,7 @@ import android.util.Log;
 
 import androidx.annotation.RequiresPermission;
 
-import com.example.dtn.MainActivity;
+import com.example.dtn.managers.BluetoothManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -18,15 +18,21 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * BluetoothBroadcastReceiver - Updated for MVVM
+ * Now delegates to BluetoothManager instead of MainActivity
+ */
 public class BluetoothBroadcastReceiver extends BroadcastReceiver {
-    private static final String TAG = "BluetoothBroadcastReceiver";
+    private static final String TAG = "BTBroadcastReceiver";
 
-    private final MainActivity activity;
-    private final List<BluetoothDevice> discoveredDevices = Collections.synchronizedList(new ArrayList<>());
-    private final Set<String> discoveredAddresses = Collections.synchronizedSet(new HashSet<>());
+    private final BluetoothManager bluetoothManager;
+    private final List<BluetoothDevice> discoveredDevices =
+            Collections.synchronizedList(new ArrayList<>());
+    private final Set<String> discoveredAddresses =
+            Collections.synchronizedSet(new HashSet<>());
 
-    public BluetoothBroadcastReceiver(MainActivity activity) {
-        this.activity = activity;
+    public BluetoothBroadcastReceiver(BluetoothManager bluetoothManager) {
+        this.bluetoothManager = bluetoothManager;
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -52,13 +58,13 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             String deviceAddress = device.getAddress();
 
             // Check if already discovered
-            synchronized (discoveredAddresses){
+            synchronized (discoveredAddresses) {
                 if (discoveredAddresses.contains(deviceAddress)) {
                     return;
                 }
             }
 
-            // GET LOCAL ADDRESS
+            // Get local address to skip self
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
             String localAddress = null;
 
@@ -90,13 +96,13 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             }
 
             // Check if DTN-compatible
-            if (!activity.isDTNDevice(device)) {
+            if (!isDTNDevice(device)) {
                 Log.d(TAG, "✗ Skipped non-DTN device: " + device.getName());
                 return;
             }
 
-            // ADD to list
-            synchronized (discoveredDevices){
+            // Add to list
+            synchronized (discoveredDevices) {
                 discoveredDevices.add(device);
                 discoveredAddresses.add(deviceAddress);
             }
@@ -110,34 +116,24 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             }
             Log.d(TAG, "✓ Added device: " + devName + " (" + deviceAddress + ")");
 
-            // Update UI immediately
-            activity.updateBluetoothDeviceList(getDiscoveredDevicesCopy());
+            // Notify BluetoothManager
+            bluetoothManager.onDeviceDiscovered(device);
         }
 
         // 2. DISCOVERY FINISHED
         else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
             Log.d(TAG, "=== Discovery Finished ===");
-            Log.d(TAG, "Total devices found: " + discoveredDevices.size());
 
             int deviceCount;
-            synchronized (discoveredDevices){
+            synchronized (discoveredDevices) {
                 deviceCount = discoveredDevices.size();
             }
 
             Log.d(TAG, "Total devices found: " + deviceCount);
 
-            // update with copy
+            // Notify BluetoothManager
             List<BluetoothDevice> devicesCopy = getDiscoveredDevicesCopy();
-            activity.onBluetoothDiscoveryFinished(devicesCopy);
-            activity.updateBluetoothDeviceList(devicesCopy);
-
-            // Auto-connect if devices found
-            if (deviceCount >  0){
-                Log.d(TAG, "Starting auto-connect...");
-                activity.autoConnectToFriends(devicesCopy);
-            } else {
-                Log.d(TAG, "No devices found - skipping auto-connect");
-            }
+            bluetoothManager.onDiscoveryFinished(devicesCopy);
         }
 
         // 3. BLUETOOTH STATE CHANGED
@@ -147,14 +143,13 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             switch (state) {
                 case BluetoothAdapter.STATE_OFF:
                     Log.w(TAG, "Bluetooth turned OFF");
-                    // Clear lists when BT disabled
                     resetDiscovery();
-                    activity.onBluetoothStateChanged(false);
+                    bluetoothManager.onBluetoothStateChanged(false);
                     break;
 
                 case BluetoothAdapter.STATE_ON:
                     Log.d(TAG, "✓ Bluetooth turned ON");
-                    activity.onBluetoothStateChanged(true);
+                    bluetoothManager.onBluetoothStateChanged(true);
                     break;
 
                 case BluetoothAdapter.STATE_TURNING_ON:
@@ -184,13 +179,68 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
 
                 if (bondState == BluetoothDevice.BOND_BONDED) {
                     Log.d(TAG, "✓ Device paired: " + devName);
-                    activity.onBluetoothDevicePaired(device);
+                    bluetoothManager.onDevicePaired(device);
                 } else if (bondState == BluetoothDevice.BOND_BONDING) {
                     Log.d(TAG, "Pairing in progress: " + devName);
                 } else if (bondState == BluetoothDevice.BOND_NONE) {
                     Log.w(TAG, "Pairing failed or removed: " + devName);
                 }
             }
+        }
+    }
+
+    /**
+     * Check if device is DTN-compatible
+     */
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private boolean isDTNDevice(BluetoothDevice device) {
+        if (device == null) {
+            return false;
+        }
+
+        try {
+            int deviceType = device.getType();
+
+            // Accept Classic and Dual mode devices
+            if (deviceType == BluetoothDevice.DEVICE_TYPE_CLASSIC ||
+                    deviceType == BluetoothDevice.DEVICE_TYPE_DUAL) {
+
+                String name = null;
+                try {
+                    name = device.getName();
+                } catch (SecurityException e) {
+                    Log.w(TAG, "Cannot get device name for DTN check");
+                }
+
+                if (name != null && !name.isEmpty() && name.length() < 50) {
+                    int deviceClass = device.getBluetoothClass().getDeviceClass();
+                    boolean isAudioDevice = (deviceClass & 0x400) != 0;
+
+                    if (!isAudioDevice) {
+                        return true;
+                    }
+                }
+            }
+
+            // Accept BLE devices with names
+            if (deviceType == BluetoothDevice.DEVICE_TYPE_LE) {
+                String name = null;
+                try {
+                    name = device.getName();
+                } catch (SecurityException e) {
+                    // Ignore
+                }
+
+                if (name != null && !name.isEmpty()) {
+                    return true;
+                }
+            }
+
+            return false;
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking device: " + e.getMessage());
+            return false;
         }
     }
 
@@ -213,6 +263,4 @@ public class BluetoothBroadcastReceiver extends BroadcastReceiver {
             return new ArrayList<>(discoveredDevices);
         }
     }
-
-
 }
