@@ -10,7 +10,7 @@ import android.util.Log;
 
 import androidx.annotation.RequiresPermission;
 
-import com.example.dtn.MainActivity;
+import com.example.dtn.view.MainActivity;
 import com.example.dtn.data.Message;
 
 import java.io.IOException;
@@ -134,13 +134,6 @@ public class BluetoothClientThread extends Thread {
 
                 Log.d(TAG, "✓✓✓ Handshake complete with " + deviceName + " ✓✓✓");
 
-                // Update connection flag on main thread
-                Handler mainHandler = new Handler(Looper.getMainLooper());
-                mainHandler.post(() -> {
-                    Log.d(TAG, "✓ UI Updated: Connected to " + deviceName);
-                    MainActivity.isBluetoothConnected = true;
-                });
-
                 // Enter message reading loop
                 Log.d(TAG, "Entering message loop for " + deviceName);
 
@@ -162,7 +155,7 @@ public class BluetoothClientThread extends Thread {
 
                 // If we exit loop, connection is lost
                 Log.w(TAG, "Exited message loop - connection lost to " + deviceName);
-                // ✅ MESH FIX: Send device address in connection lost message
+                // Send device address in connection lost message
                 if (handler != null) {
                     android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
                     msg.obj = deviceAddress;
@@ -273,7 +266,7 @@ public class BluetoothClientThread extends Thread {
         } catch (Exception e) {
             Log.e(TAG, "Write error to " + deviceName, e);
             connected = false;
-            // ✅ MESH FIX: Notify of connection loss
+            // Notify of connection loss
             if (handler != null) {
                 android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
                 msg.obj = deviceAddress;
@@ -320,7 +313,7 @@ public class BluetoothClientThread extends Thread {
                 }
             }
         } finally {
-            // ✅ MESH FIX: Send device address in connection lost message
+            // Send device address in connection lost message
             if (handler != null) {
                 android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
                 msg.obj = deviceAddress;
@@ -351,7 +344,7 @@ public class BluetoothClientThread extends Thread {
         return connected && socket != null && socket.isConnected();
     }
 
-    // ✅ MESH FIX: Helper method to get device name safely
+    // Helper method to get device name safely
     public String getRemoteDeviceName() {
         return deviceName;
     }

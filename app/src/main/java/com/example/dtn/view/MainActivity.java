@@ -19,6 +19,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.lifecycle.ViewModelProvider;
 
+import com.example.dtn.R;
 import com.example.dtn.data.Friend;
 import com.example.dtn.data.Message;
 import com.example.dtn.managers.BluetoothManager;

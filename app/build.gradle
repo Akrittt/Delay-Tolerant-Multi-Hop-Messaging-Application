@@ -47,7 +47,6 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime:2.6.2'
     implementation 'androidx.lifecycle:lifecycle-common-java8:2.6.2'
     annotationProcessor 'androidx.lifecycle:lifecycle-compiler:2.6.2'
-    implementation 'androidx.coordinatorlayout:coordinatorlayout:1.2.0'
 
     // Fragment (for dialogs and better lifecycle management)
     implementation 'androidx.fragment:fragment:1.6.2'
