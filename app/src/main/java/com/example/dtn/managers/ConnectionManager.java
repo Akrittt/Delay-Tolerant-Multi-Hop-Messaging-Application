@@ -368,20 +368,8 @@ public class ConnectionManager {
                         devicesSentTo++;
                     }
 
-                    final boolean finalSent = sent;
-                    final int finalDevicesSentTo = devicesSentTo;
+                    Log.d(TAG, "✓ Sent via Bluetooth to " + devicesSentTo + " device(s)");
 
-                    new Handler(Looper.getMainLooper()).post(() -> {
-                        if (finalSent) {
-                            String successMsg = finalDevicesSentTo > 1
-                                    ? "✓ Broadcasted to " + finalDevicesSentTo + " devices"
-                                    : "✓ Message sent";
-                            Toast.makeText(context, successMsg, Toast.LENGTH_SHORT).show();
-                        } else {
-                            Toast.makeText(context, "No active Bluetooth connection - message queued",
-                                    Toast.LENGTH_LONG).show();
-                        }
-                    });
                 } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
                     // Send via WiFi Direct
                     ServerThread serverThread = wifiDirectManager.getServerThread();
@@ -403,7 +391,6 @@ public class ConnectionManager {
                 final boolean finalSent = sent;
                 final int finalDevicesSentTo = devicesSentTo;
 
-                // Update UI on main thread
                 new Handler(Looper.getMainLooper()).post(() -> {
                     if (finalSent) {
                         String successMsg = finalDevicesSentTo > 1
@@ -418,6 +405,12 @@ public class ConnectionManager {
 
             } catch (Exception e) {
                 Log.e(TAG, "Error sending message", e);
+
+                // Show error toast
+                new Handler(Looper.getMainLooper()).post(() ->
+                        Toast.makeText(context, "Error sending message: " + e.getMessage(),
+                                Toast.LENGTH_SHORT).show()
+                );
             }
         });
     }
