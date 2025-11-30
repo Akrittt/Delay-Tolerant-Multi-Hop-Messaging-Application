@@ -27,8 +27,11 @@ import com.example.dtn.security.CryptoUtils;
 import com.example.dtn.viewmodel.MainViewModel;
 
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -64,6 +67,9 @@ public class ConnectionManager {
     private RoutingProtocol activeRoutingProtocol;
     private EpidemicRouting epidemicRouting;
     private SprayAndWaitRouting sprayAndWaitRouting;
+
+    private final Queue<Message> messageQueue = new ConcurrentLinkedQueue<>();
+    private static final int MAX_QUEUE_SIZE = 50;
 
     public ConnectionManager(Context context, MainViewModel viewModel,
                              BluetoothManager bluetoothManager,
@@ -126,7 +132,7 @@ public class ConnectionManager {
                 Toast.makeText(context, "✓ Connected to " + deviceName,
                         Toast.LENGTH_SHORT).show();
                 new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                    triggerForwardingLogic();
+                    flushMessageQueue();
                 }, 2000);
 
 
@@ -338,7 +344,7 @@ public class ConnectionManager {
     /**
      * Send message via active transport
      */
-    public void sendMessage(Message message) {
+    public void transmitMessage(Message message) {
         executorService.execute(() -> {
             try {
                 boolean sent = false;
@@ -368,10 +374,9 @@ public class ConnectionManager {
                         devicesSentTo++;
                     }
 
-                    Log.d(TAG, "✓ Sent via Bluetooth to " + devicesSentTo + " device(s)");
+                    Log.d(TAG, "✓ Bluetooth: Sent to " + devicesSentTo + " device(s)");
 
                 } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
-                    // Send via WiFi Direct
                     ServerThread serverThread = wifiDirectManager.getServerThread();
                     ClientThread clientThread = wifiDirectManager.getClientThread();
 
@@ -388,31 +393,160 @@ public class ConnectionManager {
                     }
                 }
 
+                // ✅ Queue if not sent
+                if (!sent) {
+                    queueMessage(message);
+                    Log.d(TAG, "📥 Message queued: " + message.message_id +
+                            " (Queue: " + messageQueue.size() + ")");
+                }
+
                 final boolean finalSent = sent;
                 final int finalDevicesSentTo = devicesSentTo;
 
+                // Update UI
                 new Handler(Looper.getMainLooper()).post(() -> {
                     if (finalSent) {
                         String successMsg = finalDevicesSentTo > 1
-                                ? "✓ Broadcasted to " + finalDevicesSentTo + " devices"
+                                ? "✓ Sent to " + finalDevicesSentTo + " devices"
                                 : "✓ Message sent";
                         Toast.makeText(context, successMsg, Toast.LENGTH_SHORT).show();
-                    } else {
-                        Toast.makeText(context, "No active connection - message queued",
-                                Toast.LENGTH_LONG).show();
                     }
+                    // Don't show "queued" toast here - already shown in MainActivity
                 });
 
             } catch (Exception e) {
                 Log.e(TAG, "Error sending message", e);
 
-                // Show error toast
                 new Handler(Looper.getMainLooper()).post(() ->
-                        Toast.makeText(context, "Error sending message: " + e.getMessage(),
+                        Toast.makeText(context, "❌ Send error: " + e.getMessage(),
                                 Toast.LENGTH_SHORT).show()
                 );
             }
         });
+    }
+
+    /**
+     * Add message to queue (with size limit)
+     */
+    private void queueMessage(Message message) {
+        if (messageQueue.size() >= MAX_QUEUE_SIZE) {
+            // Remove oldest message
+            Message removed = messageQueue.poll();
+            Log.w(TAG, "⚠️ Queue full - removed oldest message: " +
+                    (removed != null ? removed.message_id : "unknown"));
+        }
+
+        messageQueue.offer(message);
+        Log.d(TAG, "📥 Queued message: " + message.message_id +
+                " (Queue size: " + messageQueue.size() + ")");
+    }
+
+    /**
+     * Flush all queued messages when connection is established
+     */
+    public void flushMessageQueue() {
+        int queueSize = messageQueue.size();
+
+        if (queueSize == 0) {
+            Log.d(TAG, "No queued messages to flush");
+            return;
+        }
+
+        Log.d(TAG, "📤 Flushing " + queueSize + " queued messages...");
+
+        executorService.execute(() -> {
+            int successCount = 0;
+            int failCount = 0;
+
+            while (!messageQueue.isEmpty()) {
+                Message msg = messageQueue.poll();
+                if (msg != null) {
+                    try {
+                        // Check if message expired
+                        if (msg.ttl_timestamp < System.currentTimeMillis()) {
+                            Log.w(TAG, "⏰ Message expired: " + msg.message_id);
+                            failCount++;
+                            continue;
+                        }
+
+                        // Send message (without re-queueing)
+                        sendMessageDirectly(msg);
+                        successCount++;
+
+                        // Small delay between messages
+                        Thread.sleep(100);
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error flushing message: " + msg.message_id, e);
+                        failCount++;
+                    }
+                }
+            }
+
+            final int finalSuccess = successCount;
+            final int finalFail = failCount;
+
+            new Handler(Looper.getMainLooper()).post(() -> {
+                String msg = "✓ Sent " + finalSuccess + " queued message(s)";
+                if (finalFail > 0) {
+                    msg += " (" + finalFail + " failed/expired)";
+                }
+
+                Toast.makeText(context, msg, Toast.LENGTH_LONG).show();
+                Log.d(TAG, "📤 Queue flush complete: " + finalSuccess + " sent, " +
+                        finalFail + " failed");
+            });
+        });
+    }
+
+    /**
+     * Send message directly without queueing
+     */
+    private void sendMessageDirectly(Message message) throws Exception {
+        MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
+
+        if (transport == MainViewModel.TransportType.BLUETOOTH) {
+            BluetoothServerThread btServerThread = bluetoothManager.getServerThread();
+            List<BluetoothClientThread> btClientThreads = bluetoothManager.getClientThreads();
+
+            if (btClientThreads != null) {
+                for (BluetoothClientThread client : btClientThreads) {
+                    if (client != null && client.isConnected()) {
+                        client.write(message);
+                    }
+                }
+            }
+
+            if (btServerThread != null && btServerThread.isAlive()) {
+                btServerThread.broadcastToAll(message);
+            }
+
+        } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
+            ServerThread serverThread = wifiDirectManager.getServerThread();
+            ClientThread clientThread = wifiDirectManager.getClientThread();
+
+            if (serverThread != null && serverThread.isConnected()) {
+                serverThread.write(message);
+            } else if (clientThread != null && clientThread.isConnected()) {
+                clientThread.write(message);
+            }
+        }
+    }
+
+    /**
+     * Get current queue size
+     */
+    public int getQueueSize() {
+        return messageQueue.size();
+    }
+
+    /**
+     * Clear message queue
+     */
+    public void clearMessageQueue() {
+        int cleared = messageQueue.size();
+        messageQueue.clear();
+        Log.d(TAG, "🗑️ Cleared " + cleared + " queued messages");
     }
 
     /**
@@ -486,7 +620,7 @@ public class ConnectionManager {
                 ackMessage.hop_count = 0;
                 ackMessage.copy_count = 1;
 
-                sendMessage(ackMessage);
+                transmitMessage(ackMessage);
                 Log.d(TAG, "✓ ACK sent for message: " + message.message_id);
             } catch (Exception e) {
                 Log.e(TAG, "Error sending ACK", e);
@@ -506,7 +640,7 @@ public class ConnectionManager {
             viewModel.updateMessage(message, null);
 
             // Forward via active transport
-            sendMessage(message);
+            transmitMessage(message);
         }
     }
 
@@ -518,7 +652,7 @@ public class ConnectionManager {
 
         if (!myDeviceId.equals(ackMessage.destination_id)) {
             // ACK not for me, forward it
-            sendMessage(ackMessage);
+            transmitMessage(ackMessage);
             return;
         }
 
@@ -576,6 +710,7 @@ public class ConnectionManager {
             }
         }
     }
+
 
     /**
      * Get message handler

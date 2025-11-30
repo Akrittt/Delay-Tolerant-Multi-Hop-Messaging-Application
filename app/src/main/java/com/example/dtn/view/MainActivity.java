@@ -338,13 +338,6 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // Check if connected
-        Boolean isConnected = viewModel.getIsConnected().getValue();
-        if (isConnected == null || !isConnected) {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
         // Create message
         try {
             Message message = new Message();
@@ -352,40 +345,73 @@ public class MainActivity extends AppCompatActivity {
             message.encrypted_payload = CryptoUtils.encrypt(msgText);
             message.checksum = CryptoUtils.generateChecksum(message.encrypted_payload);
             message.source_id = viewModel.getOwnDeviceId().getValue();
-            message.destination_id = "broadcast"; // TODO: Get from peer selection
+
+            message.destination_id = "broadcast"; // TODO: Get from destination spinner if implemented
+
             message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
-            message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000);
+            message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000); // 2 hours
             message.hop_count = 0;
             message.copy_count = 6;
 
-            // Add to UI immediately
-            viewModel.addChatMessage("Me: " + msgText, message.message_id, false);
+            // Add to UI immediately with queued status
+            Boolean isConnected = viewModel.getIsConnected().getValue();
+            boolean connected = isConnected != null && isConnected;
+
+            String displayText = "Me: " + msgText + (connected ? "" : " [Queued]");
+            viewModel.addChatMessage(displayText, message.message_id, false);
 
             // Clear input
             messageEditText.setText("");
 
-            // Save and send via ViewModel
+            // Save to database
             viewModel.insertMessage(message, new MessageRepository.RepositoryCallback<Void>() {
                 @Override
                 public void onSuccess(Void result) {
-                    Log.d(TAG, "✓ Message saved");
-                    connectionManager.sendMessage(message);
+                    Log.d(TAG, "✓ Message saved to database");
+
+                    // Try to send immediately (will queue if not connected)
+                    connectionManager.transmitMessage(message);
+
+                    // Show appropriate feedback
+                    runOnUiThread(() -> {
+                        if (connected) {
+                            // Message is being sent
+                            Log.d(TAG, "Sending message immediately");
+                        } else {
+                            // Message queued for later
+                            Toast.makeText(MainActivity.this,
+                                    "✉️ Message queued - will send when connected",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    });
                 }
 
                 @Override
                 public void onError(Exception e) {
-                    Log.e(TAG, "Error saving message", e);
-                    runOnUiThread(() ->
-                            Toast.makeText(MainActivity.this, "Error: " + e.getMessage(),
-                                    Toast.LENGTH_SHORT).show()
-                    );
+                    Log.e(TAG, "Error saving message to database", e);
+                    runOnUiThread(() -> {
+                        Toast.makeText(MainActivity.this,
+                                "❌ Error: " + e.getMessage(),
+                                Toast.LENGTH_SHORT).show();
+
+                        // Remove from UI since save failed
+                        viewModel.getChatMessages().getValue().removeIf(
+                                msg -> msg.messageId.equals(message.message_id)
+                        );
+                    });
                 }
             });
 
         } catch (Exception e) {
             Log.e(TAG, "Error creating message", e);
-            Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "❌ Encryption error: " + e.getMessage(),
+                    Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void flushQueuedMessages() {
+        Log.d(TAG, "Flushing queued messages...");
+        connectionManager.flushMessageQueue();
     }
 
     // ==================== Menu ====================
