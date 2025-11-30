@@ -8,7 +8,7 @@ import android.bluetooth.BluetoothSocket;
 import android.os.Handler;
 import android.util.Log;
 import androidx.annotation.RequiresPermission;
-import com.example.dtn.data.Message;
+import com.example.dtn.model.data.Message;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
@@ -108,33 +108,38 @@ public class BluetoothServerThread extends Thread {
         @Override
         public void run() {
             try {
-                // Initialize streams
+                Log.d(TAG, "Initializing streams for: " + deviceName);
+
+                // Client creates OutputStream first, so server
+                ois = new ObjectInputStream(socket.getInputStream());
+                Log.d(TAG, "✓ Server: InputStream created for " + deviceName);
+
+                // Small delay to let client finish OutputStream creation
+                Thread.sleep(200);
+
                 oos = new ObjectOutputStream(socket.getOutputStream());
                 oos.flush();
-                Thread.sleep(200);
-                ois = new ObjectInputStream(socket.getInputStream());
+                Log.d(TAG, "✓ Server: OutputStream created and flushed for " + deviceName);
 
-                Log.d(TAG, "✓ Streams ready for: " + deviceName);
-                // First, handle handshake
-                Log.d(TAG, "Starting handshake with client...");
+                // Handshake protocol
+                Log.d(TAG, "Starting handshake with client " + deviceName);
 
                 // Send SERVER_READY
                 oos.writeObject("SERVER_READY");
                 oos.flush();
-                Log.d(TAG, "✓ Server: Sent SERVER_READY");
+                Log.d(TAG, "✓ Server: Sent SERVER_READY to " + deviceName);
 
                 // Wait for CLIENT_READY
                 Object clientResponse = ois.readObject();
                 if (!"CLIENT_READY".equals(clientResponse)) {
                     throw new IOException("Invalid handshake from client: " + clientResponse);
                 }
-                Log.d(TAG, "✓ Server: Received CLIENT_READY");
-                Log.d(TAG, "✓✓✓ Handshake complete - Connection established ✓✓✓");
-
-                // Now enter message reading loop
-                Log.d(TAG, "Entering message loop");
+                Log.d(TAG, "✓ Server: Received CLIENT_READY from " + deviceName);
+                Log.d(TAG, "✓✓✓ Handshake complete with " + deviceName + " ✓✓✓");
 
                 // Message loop
+                Log.d(TAG, "Entering message loop for " + deviceName);
+
                 while (clientRunning && socket.isConnected()) {
                     try {
                         Object received = ois.readObject();
@@ -178,19 +183,40 @@ public class BluetoothServerThread extends Thread {
 
         private void closeClient() {
             clientRunning = false;
-            try {
-                if (ois != null) ois.close();
-                if (oos != null) oos.close();
-                if (socket != null) socket.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing client", e);
-            }
+
+            // Ensure all resources closed
+            closeQuietly(ois);
+            closeQuietly(oos);
+            closeQuietly(socket);
 
             activeClients.remove(this);
             Log.d(TAG, "✓ Client disconnected: " + deviceName + " (Remaining: " + activeClients.size() + ")");
 
             handler.obtainMessage(MESSAGE_CONNECTION_LOST,
                     deviceName + " (Remaining: " + activeClients.size() + ")").sendToTarget();
+        }
+
+        /**
+         * Helper method to close resources safely
+         */
+        private void closeQuietly(java.io.Closeable closeable) {
+            if (closeable != null) {
+                try {
+                    closeable.close();
+                } catch (Exception e) {
+                    Log.e(TAG, "Error closing resource: " + e.getMessage());
+                }
+            }
+        }
+
+        private void closeQuietly(android.bluetooth.BluetoothSocket socket) {
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (Exception e) {
+                    Log.e(TAG, "Error closing socket: " + e.getMessage());
+                }
+            }
         }
     }
 

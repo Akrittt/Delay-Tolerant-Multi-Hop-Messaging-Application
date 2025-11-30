@@ -6,9 +6,10 @@ import android.util.Log;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 
-import com.example.dtn.data.AppDatabase;
-import com.example.dtn.data.Message;
-import com.example.dtn.data.MessageDao;
+
+import com.example.dtn.model.data.AppDatabase;
+import com.example.dtn.model.data.Message;
+import com.example.dtn.model.data.MessageDao;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;

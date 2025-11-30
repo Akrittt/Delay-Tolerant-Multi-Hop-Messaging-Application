@@ -3,7 +3,7 @@ package com.example.dtn.network;
 import android.os.Handler;
 import android.util.Log;
 
-import com.example.dtn.data.Message;
+import com.example.dtn.model.data.Message;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;

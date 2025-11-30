@@ -11,9 +11,9 @@ import android.widget.Toast;
 
 import androidx.annotation.RequiresPermission;
 
-import com.example.dtn.data.Friend;
-import com.example.dtn.data.Message;
-import com.example.dtn.data.MessageDao;
+import com.example.dtn.model.data.Friend;
+import com.example.dtn.model.data.Message;
+import com.example.dtn.model.data.MessageDao;
 import com.example.dtn.model.repository.FriendRepository;
 import com.example.dtn.model.repository.MessageRepository;
 import com.example.dtn.network.BluetoothClientThread;

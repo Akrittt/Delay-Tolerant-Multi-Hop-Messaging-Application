@@ -8,16 +8,18 @@ import android.util.Log;
 
 import androidx.annotation.RequiresPermission;
 
-import com.example.dtn.data.Message;
-import com.example.dtn.data.MessageDao;
+import com.example.dtn.model.data.Message;
+import com.example.dtn.model.data.MessageDao;
 import com.example.dtn.network.BluetoothClientThread;
 import com.example.dtn.network.BluetoothServerThread;
 import com.example.dtn.network.ClientThread;
 import com.example.dtn.network.ServerThread;
+import com.example.dtn.utils.DeviceIdentifier;
 import com.example.dtn.utils.Logger;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -28,8 +30,9 @@ import java.util.concurrent.Executors;
 public class EpidemicRouting implements RoutingProtocol {
 
     private static final String TAG = "EpidemicRouting";
-    private static final int MAX_HOPS = 15; // FIXED: Prevent infinite loops
-
+    private static final int MAX_HOPS = 15;
+    private static final int MAX_PEER_HISTORY = 100;
+    private static final int MAX_MESSAGES_PER_PEER = 1000;
     private final Logger logger;
     private final String ownDeviceId;
     private final MessageDao messageDao;
@@ -61,7 +64,7 @@ public class EpidemicRouting implements RoutingProtocol {
             return;
         }
 
-        String peerId = peer.deviceAddress != null ? peer.deviceAddress : peer.deviceName;
+        String peerId = DeviceIdentifier.getWifiDirectDeviceId(peer);
 
         for (Message message : messagesToForward) {
             // Use consistent device identifier
@@ -139,7 +142,7 @@ public class EpidemicRouting implements RoutingProtocol {
             return;
         }
 
-        String peerId = peer.getName();  // Use Bluetooth device name
+        String peerId = DeviceIdentifier.getBluetoothDeviceId(peer);
         String peerAddress = peer.getAddress();
 
         for (Message message : messagesToForward) {
@@ -353,7 +356,32 @@ public class EpidemicRouting implements RoutingProtocol {
      */
     private void recordMessageForPeer(String peerId, String messageId) {
         synchronized (historyLock) {
-            peerMessageHistory.computeIfAbsent(peerId, k -> new HashSet<>()).add(messageId);
+            Set<String> messages = peerMessageHistory.computeIfAbsent(peerId, k -> new HashSet<>());
+
+            // Prevent unbounded growth
+            if (messages.size() >= MAX_MESSAGES_PER_PEER) {
+                Log.w(TAG, "Peer history full for " + peerId + ", clearing oldest entries");
+                // Remove approximately 20% of entries to make room
+                int toRemove = MAX_MESSAGES_PER_PEER / 5;
+                Iterator<String> it = messages.iterator();
+                for (int i = 0; i < toRemove && it.hasNext(); i++) {
+                    it.next();
+                    it.remove();
+                }
+            }
+
+            messages.add(messageId);
+
+            // Limit total number of peers tracked
+            if (peerMessageHistory.size() > MAX_PEER_HISTORY) {
+                // Remove the first peer in the map (oldest entry)
+                Iterator<Map.Entry<String, Set<String>>> it = peerMessageHistory.entrySet().iterator();
+                if (it.hasNext()) {
+                    Map.Entry<String, Set<String>> oldest = it.next();
+                    Log.d(TAG, "Removing history for old peer: " + oldest.getKey());
+                    it.remove();
+                }
+            }
         }
     }
 

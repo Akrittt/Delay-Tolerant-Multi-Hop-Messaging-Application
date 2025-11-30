@@ -8,8 +8,8 @@ import android.util.Log;
 
 import androidx.annotation.RequiresPermission;
 
-import com.example.dtn.data.Message;
-import com.example.dtn.data.MessageDao;
+import com.example.dtn.model.data.Message;
+import com.example.dtn.model.data.MessageDao;
 import com.example.dtn.network.BluetoothClientThread;
 import com.example.dtn.network.BluetoothServerThread;
 import com.example.dtn.network.ClientThread;

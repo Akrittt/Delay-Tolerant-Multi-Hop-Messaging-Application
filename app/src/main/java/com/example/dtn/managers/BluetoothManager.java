@@ -17,10 +17,11 @@ import android.widget.Toast;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.PermissionChecker;
 
-import com.example.dtn.data.Friend;
+import com.example.dtn.model.data.Friend;
 import com.example.dtn.network.BluetoothBroadcastReceiver;
 import com.example.dtn.network.BluetoothClientThread;
 import com.example.dtn.network.BluetoothServerThread;
+import com.example.dtn.utils.DeviceIdentifier;
 import com.example.dtn.viewmodel.MainViewModel;
 
 import java.util.ArrayList;
@@ -264,7 +265,8 @@ public class BluetoothManager {
         if (connectionManager != null) {
             BluetoothClientThread clientThread = new BluetoothClientThread(
                     device,
-                    connectionManager.getMessageHandler()
+                    connectionManager.getMessageHandler(),
+                    context
             );
             clientThreads.add(clientThread);
             clientThread.start();
@@ -437,23 +439,7 @@ public class BluetoothManager {
         if (device == null) {
             return "Unknown";
         }
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
-                        == PermissionChecker.PERMISSION_GRANTED) {
-                    String name = device.getName();
-                    return (name != null && !name.isEmpty()) ? name : "Device_" + device.getAddress();
-                }
-            } else {
-                String name = device.getName();
-                return (name != null && !name.isEmpty()) ? name : "Device_" + device.getAddress();
-            }
-        } catch (SecurityException e) {
-            Log.e(TAG, "Permission error getting device name", e);
-        }
-
-        return "Device_" + device.getAddress().replace(":", "");
+        return DeviceIdentifier.getBluetoothDeviceId(device);
     }
 
     /**

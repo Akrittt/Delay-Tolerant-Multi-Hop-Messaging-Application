@@ -2,7 +2,7 @@ package com.example.dtn.routing;
 
 import android.net.wifi.p2p.WifiP2pDevice;
 
-import com.example.dtn.data.Message;
+import com.example.dtn.model.data.Message;
 import com.example.dtn.network.ClientThread;
 import com.example.dtn.network.ServerThread;
 

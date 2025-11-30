@@ -6,9 +6,9 @@ import android.util.Log;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 
-import com.example.dtn.data.AppDatabase;
-import com.example.dtn.data.Friend;
-import com.example.dtn.data.FriendDao;
+import com.example.dtn.model.data.AppDatabase;
+import com.example.dtn.model.data.Friend;
+import com.example.dtn.model.data.FriendDao;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;

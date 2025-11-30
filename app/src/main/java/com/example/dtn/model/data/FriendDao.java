@@ -1,4 +1,4 @@
-package com.example.dtn.data;
+package com.example.dtn.model.data;
 
 import androidx.room.Dao;
 import androidx.room.Delete;

@@ -4,14 +4,18 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
 import androidx.annotation.RequiresPermission;
+import androidx.core.content.ContextCompat;
 
 import com.example.dtn.view.MainActivity;
-import com.example.dtn.data.Message;
+import com.example.dtn.model.data.Message;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -26,6 +30,7 @@ public class BluetoothClientThread extends Thread {
     private static final UUID BT_UUID = UUID.fromString(
             "00001101-0000-1000-8000-00805F9B34FB"
     );
+    private final Context context;
 
     private final BluetoothDevice device;
     private final Handler handler;
@@ -39,10 +44,11 @@ public class BluetoothClientThread extends Thread {
     private final String deviceAddress;
     private final String deviceName;
 
-    public BluetoothClientThread(BluetoothDevice device, Handler handler) {
+    public BluetoothClientThread(BluetoothDevice device, Handler handler, Context context) {
         this.device = device;
         this.handler = handler;
         this.deviceAddress = device.getAddress();
+        this.context = context;
 
         // Safe device name retrieval
         String name = "Unknown";
@@ -63,6 +69,18 @@ public class BluetoothClientThread extends Thread {
     @Override
     public void run() {
         Log.d(TAG, "ClientThread: Connecting to " + deviceName);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "✗✗✗ BLUETOOTH_CONNECT permission denied!");
+                if (handler != null) {
+                    android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
+                    msg.obj = deviceAddress;
+                    handler.sendMessage(msg);
+                }
+                return;
+            }
+        }
 
         int maxRetries = 5;
         int retryCount = 0;
@@ -279,52 +297,41 @@ public class BluetoothClientThread extends Thread {
         running = false;
         connected = false;
 
-        try {
-            if (oos != null) {
-                try {
-                    oos.close();
-                    Log.d(TAG, "✓ Output stream closed for " + deviceName);
-                } catch (IOException e) {
-                    Log.e(TAG, "Error closing output stream", e);
-                } finally {
-                    oos = null;
-                }
-            }
+        Log.d(TAG, "Closing ClientThread for " + deviceName);
 
-            if (ois != null) {
-                try {
-                    ois.close();
-                    Log.d(TAG, "✓ Input stream closed for " + deviceName);
-                } catch (IOException e) {
-                    Log.e(TAG, "Error closing input stream", e);
-                } finally {
-                    ois = null;
-                }
-            }
+        // Ensure all resources are closed even if exceptions occur
+        closeQuietly(oos);
+        closeQuietly(ois);
+        closeQuietly(socket);
 
-            if (socket != null) {
-                try {
-                    socket.close();
-                    Log.d(TAG, "✓ Socket closed for " + deviceName);
-                } catch (IOException e) {
-                    Log.e(TAG, "Error closing socket", e);
-                } finally {
-                    socket = null;
-                }
-            }
-        } finally {
-            // Send device address in connection lost message
-            if (handler != null) {
-                android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
-                msg.obj = deviceAddress;
-                handler.sendMessage(msg);
-                Log.d(TAG, "✓ Sent CONNECTION_LOST message for " + deviceName);
-            }
-
-            Thread.currentThread().interrupt();
+        // Send device address in connection lost message
+        if (handler != null) {
+            android.os.Message msg = handler.obtainMessage(MESSAGE_CONNECTION_LOST);
+            msg.obj = deviceAddress;
+            handler.sendMessage(msg);
+            Log.d(TAG, "✓ Sent CONNECTION_LOST message for " + deviceName);
         }
 
+        Thread.currentThread().interrupt();
         Log.d(TAG, "✓✓✓ Cleanup complete for " + deviceName);
+    }
+    private void closeQuietly(java.io.Closeable closeable) {
+        if (closeable != null) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                Log.e(TAG, "Error closing resource: " + e.getMessage());
+            }
+        }
+    }
+    private void closeQuietly(android.bluetooth.BluetoothSocket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (Exception e) {
+                Log.e(TAG, "Error closing socket: " + e.getMessage());
+            }
+        }
     }
 
     public void cancel() {
@@ -344,8 +351,4 @@ public class BluetoothClientThread extends Thread {
         return connected && socket != null && socket.isConnected();
     }
 
-    // Helper method to get device name safely
-    public String getRemoteDeviceName() {
-        return deviceName;
-    }
 }

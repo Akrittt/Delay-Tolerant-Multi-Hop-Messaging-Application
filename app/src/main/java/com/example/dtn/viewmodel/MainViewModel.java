@@ -8,8 +8,8 @@ import androidx.lifecycle.AndroidViewModel;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 
-import com.example.dtn.data.Friend;
-import com.example.dtn.data.Message;
+import com.example.dtn.model.data.Friend;
+import com.example.dtn.model.data.Message;
 import com.example.dtn.model.repository.FriendRepository;
 import com.example.dtn.model.repository.MessageRepository;
 

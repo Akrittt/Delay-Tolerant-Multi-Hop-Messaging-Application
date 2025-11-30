@@ -21,8 +21,8 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.lifecycle.ViewModelProvider;
 
 import com.example.dtn.R;
-import com.example.dtn.data.Friend;
-import com.example.dtn.data.Message;
+import com.example.dtn.model.data.Friend;
+import com.example.dtn.model.data.Message;
 import com.example.dtn.managers.BluetoothManager;
 import com.example.dtn.managers.ConnectionManager;
 import com.example.dtn.managers.PermissionManager;
@@ -346,7 +346,7 @@ public class MainActivity extends AppCompatActivity {
             message.checksum = CryptoUtils.generateChecksum(message.encrypted_payload);
             message.source_id = viewModel.getOwnDeviceId().getValue();
 
-            message.destination_id = "broadcast"; // TODO: Get from destination spinner if implemented
+            message.destination_id = getDestinationFromSpinner();
 
             message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
             message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000); // 2 hours
@@ -354,8 +354,7 @@ public class MainActivity extends AppCompatActivity {
             message.copy_count = 6;
 
             // Add to UI immediately with queued status
-            Boolean isConnected = viewModel.getIsConnected().getValue();
-            boolean connected = isConnected != null && isConnected;
+            boolean connected = Boolean.TRUE.equals(viewModel.getIsConnected().getValue());
 
             String displayText = "Me: " + msgText + (connected ? "" : " [Queued]");
             viewModel.addChatMessage(displayText, message.message_id, false);
@@ -407,6 +406,25 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "❌ Encryption error: " + e.getMessage(),
                     Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private String getDestinationFromSpinner() {
+        String selected = destinationSpinner.getSelectedItem().toString();
+
+        // "broadcast" is special case for flooding
+        if ("broadcast".equalsIgnoreCase(selected)) {
+            return "broadcast";
+        }
+
+        // Extract device ID from display string
+        String deviceId = selected;
+
+        // Remove connection status if present
+        if (deviceId.contains(" ✓ ")) {
+            deviceId = deviceId.substring(0, deviceId.indexOf(" ✓ "));
+        }
+
+        return deviceId.trim();
     }
 
     private void flushQueuedMessages() {
