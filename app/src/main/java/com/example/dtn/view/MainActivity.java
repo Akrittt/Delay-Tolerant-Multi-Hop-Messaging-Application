@@ -123,12 +123,10 @@ public class MainActivity extends AppCompatActivity {
         // Find views
         statusTextView = findViewById(R.id.statusTextView);
         protocolTextView = findViewById(R.id.protocolTextView);
-        transportTextView = findViewById(R.id.transportTextView);
         peerListView = findViewById(R.id.peerListView);
         chatListView = findViewById(R.id.chatListView);
         messageEditText = findViewById(R.id.messageEditText);
         sendButton = findViewById(R.id.sendButton);
-        prioritySpinner = findViewById(R.id.prioritySpinner);
         destinationSpinner = findViewById(R.id.destinationSpinner);
         toolbar = findViewById(R.id.toolbar);
 
@@ -142,12 +140,6 @@ public class MainActivity extends AppCompatActivity {
         chatAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, new ArrayList<>());
         chatListView.setAdapter(chatAdapter);
 
-        // Setup priority spinner
-        ArrayAdapter<CharSequence> priorityAdapter = ArrayAdapter.createFromResource(
-                this, R.array.priority_options, android.R.layout.simple_spinner_item);
-        priorityAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        prioritySpinner.setAdapter(priorityAdapter);
-        prioritySpinner.setSelection(0);
 
         Log.d(TAG, "✓ UI initialized");
     }
@@ -309,12 +301,9 @@ public class MainActivity extends AppCompatActivity {
         viewModel.setOwnDeviceId(deviceId);
 
         // Start transport services
-        MainViewModel.TransportType activeTransport = viewModel.getActiveTransport().getValue();
-        if (activeTransport == MainViewModel.TransportType.BLUETOOTH) {
-            bluetoothManager.start();
-        } else {
-            wifiDirectManager.start();
-        }
+        bluetoothManager.start();
+        wifiDirectManager.start();
+
 
         // Start connection manager
         connectionManager.start();
@@ -348,14 +337,13 @@ public class MainActivity extends AppCompatActivity {
 
             message.destination_id = getDestinationFromSpinner();
 
-            message.priority = prioritySpinner.getSelectedItem().toString().equals("HIGH") ? 1 : 0;
+            message.priority = 0;
             message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000); // 2 hours
             message.hop_count = 0;
             message.copy_count = 6;
 
             // Add to UI immediately with queued status
             boolean connected = Boolean.TRUE.equals(viewModel.getIsConnected().getValue());
-
             String displayText = "Me: " + msgText + (connected ? "" : " [Queued]");
             viewModel.addChatMessage(displayText, message.message_id, false);
 
@@ -456,12 +444,30 @@ public class MainActivity extends AppCompatActivity {
             return true;
         }
 
-        // Transport selection
-        if (itemId == R.id.menu_transport_wifi) {
-            switchToWiFiDirect();
-            return true;
-        } else if (itemId == R.id.menu_transport_bluetooth) {
-            switchToBluetooth();
+        // Wi-Fi Direct Relay Toggle
+        if (itemId == R.id.menu_wifi_relay) {
+            boolean isChecked = !item.isChecked();
+            item.setChecked(isChecked);
+
+            if (isChecked) {
+                // Show explanation dialog
+                new AlertDialog.Builder(this)
+                        .setTitle("Enable Wi-Fi Direct Relay?")
+                        .setMessage("Wi-Fi Direct provides long-range relay between Bluetooth mesh clusters.\n\n" +
+                                "• Range: ~200m (vs BT ~30m)\n" +
+                                "• Speed: ~250 Mbps (vs BT ~2 Mbps)\n" +
+                                "• Use: Bridge to distant groups\n\n" +
+                                "Bluetooth mesh remains active for local multi-hop.")
+                        .setPositiveButton("Enable", (dialog, which) -> {
+                            connectionManager.enableWifiDirectRelay(true);
+                        })
+                        .setNegativeButton("Cancel", (dialog, which) -> {
+                            item.setChecked(false);
+                        })
+                        .show();
+            } else {
+                connectionManager.enableWifiDirectRelay(false);
+            }
             return true;
         }
 
@@ -485,25 +491,6 @@ public class MainActivity extends AppCompatActivity {
         return super.onOptionsItemSelected(item);
     }
 
-    /**
-     * Switch to WiFi Direct transport
-     */
-    private void switchToWiFiDirect() {
-        bluetoothManager.stop();
-        viewModel.setTransport(MainViewModel.TransportType.WIFI_DIRECT);
-        wifiDirectManager.start();
-        Toast.makeText(this, "✓ Switched to Wi-Fi Direct", Toast.LENGTH_SHORT).show();
-    }
-
-    /**
-     * Switch to Bluetooth transport
-     */
-    private void switchToBluetooth() {
-        wifiDirectManager.stop();
-        viewModel.setTransport(MainViewModel.TransportType.BLUETOOTH);
-        bluetoothManager.start();
-        Toast.makeText(this, "✓ Switched to Bluetooth", Toast.LENGTH_SHORT).show();
-    }
 
     // ==================== Lifecycle ====================
 

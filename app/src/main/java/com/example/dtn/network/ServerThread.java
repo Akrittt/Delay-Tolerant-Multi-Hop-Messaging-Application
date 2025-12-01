@@ -20,11 +20,10 @@ import java.util.concurrent.TimeUnit;
  */
 public class ServerThread extends Thread {
     private static final String TAG = "ServerThread";
-    private static final int SOCKET_TIMEOUT = 30000; // 30 seconds (reduced)
 
     private ServerSocket serverSocket;
     private Socket socket;
-    private Handler handler;
+    private final Handler handler;
     private ObjectOutputStream oos;
     private ObjectInputStream ois;
     private final BlockingQueue<Message> writeQueue = new LinkedBlockingQueue<>();
@@ -32,14 +31,10 @@ public class ServerThread extends Thread {
     private volatile boolean isRunning = true;
 
     public static final int MESSAGE_READ = 1;
-
-    private Thread writeThread;
-    private Thread readThread;
-    private long lastActivityTime;
+    private final Object oosLock = new Object();
 
     public ServerThread(Handler handler) {
         this.handler = handler;
-        this.lastActivityTime = System.currentTimeMillis();
     }
 
     public boolean isConnected() {
@@ -51,7 +46,7 @@ public class ServerThread extends Thread {
         try {
             serverSocket = new ServerSocket(8888);
             serverSocket.setReuseAddress(true);
-            serverSocket.setSoTimeout(60000);  // No timeout
+            serverSocket.setSoTimeout(0);  // No timeout
             Log.d(TAG, "Server socket timeout set to: no timeout");
             Log.d(TAG, "Server listening on port 8888");
 
@@ -64,11 +59,10 @@ public class ServerThread extends Thread {
             ois = new ObjectInputStream(socket.getInputStream());
 
             isConnected = true;
-            lastActivityTime = System.currentTimeMillis();
 
             // FIXED: Spawn separate reader/writer threads
-            readThread = new Thread(this::readLoop);
-            writeThread = new Thread(this::writeLoop);
+            Thread readThread = new Thread(this::readLoop);
+            Thread writeThread = new Thread(this::writeLoop);
 
             readThread.start();
             writeThread.start();
@@ -92,7 +86,6 @@ public class ServerThread extends Thread {
             try {
                 Message receivedMessage = (Message) ois.readObject();
                 if (receivedMessage != null) {
-                    lastActivityTime = System.currentTimeMillis();
                     Log.d(TAG, "Received: " + receivedMessage.message_id);
                     handler.obtainMessage(MESSAGE_READ, receivedMessage).sendToTarget();
                 }
@@ -111,12 +104,11 @@ public class ServerThread extends Thread {
             try {
                 Message message = writeQueue.poll(5, TimeUnit.SECONDS);
                 if (message != null) {
-                    synchronized (oos) {
+                    synchronized (oosLock) {
                         oos.writeObject(message);
                         oos.flush();
                         oos.reset();
                     }
-                    lastActivityTime = System.currentTimeMillis();
                     Log.d(TAG, "Sent: " + message.message_id);
                 }
             } catch (InterruptedException e) {
@@ -137,7 +129,9 @@ public class ServerThread extends Thread {
         }
 
         try {
-            writeQueue.offer(message, 5, TimeUnit.SECONDS);
+            if (!writeQueue.offer(message, 5, TimeUnit.SECONDS)) {
+                Log.w(TAG, "Could not add message to write queue");
+            }
         } catch (InterruptedException e) {
             Log.e(TAG, "Queue interrupted", e);
             Thread.currentThread().interrupt();

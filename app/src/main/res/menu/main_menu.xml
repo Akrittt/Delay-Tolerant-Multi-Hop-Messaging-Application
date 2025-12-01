@@ -13,19 +13,13 @@
         android:title="Spray and Wait"
         android:icon="@android:drawable/ic_menu_manage"
         app:showAsAction="never" />
+
     <item
-        android:id="@+id/menu_transport"
-        android:title="Transport"
-        app:showAsAction="never">
-        <menu>
-            <item
-                android:id="@+id/menu_transport_wifi"
-                android:title="Wi-Fi Direct" />
-            <item
-                android:id="@+id/menu_transport_bluetooth"
-                android:title="Bluetooth" />
-        </menu>
-    </item>
+        android:id="@+id/menu_wifi_relay"
+        android:title="Wi-Fi Direct Relay"
+        android:checkable="true"
+        android:checked="false"
+        app:showAsAction="never" />
 
     <item
         android:id="@+id/menu_view_friends"

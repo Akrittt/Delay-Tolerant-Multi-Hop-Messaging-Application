@@ -15,7 +15,7 @@
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
             android:background="?attr/colorPrimary"
-            app:title="DTN MESSAGE"
+            app:title="@string/toolbar_title"
             android:elevation="4dp" />
     </com.google.android.material.appbar.AppBarLayout>
 
@@ -32,15 +32,15 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:padding="12dp"
-            android:background="#f5f5f5">
+            android:background="@color/section_header">
 
             <!-- Status TextView -->
             <TextView
                 android:id="@+id/statusTextView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Status: Disconnected"
-                android:textColor="#F44336"
+                android:text="@string/status_disconnected"
+                android:textColor="@color/status_disconnected"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 android:paddingBottom="8dp" />
@@ -50,19 +50,8 @@
                 android:id="@+id/protocolTextView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Protocol: Epidemic Routing 🟠"
-                android:textColor="#FF6F00"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                android:paddingBottom="8dp" />
-
-            <!-- Transport TextView (NEW!) -->
-            <TextView
-                android:id="@+id/transportTextView"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Transport: Wi-Fi Direct 📡 (Fast)"
-                android:textColor="#4CAF50"
+                android:text="@string/protocol_display_default"
+                android:textColor="@color/accent_green"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 android:paddingBottom="8dp" />
@@ -79,7 +68,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="📱 Available Peers:"
+                android:text="@string/header_peers"
                 android:textStyle="bold"
                 android:textSize="14sp"
                 android:paddingBottom="8dp" />
@@ -103,7 +92,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="💬 Chat:"
+                android:text="@string/header_chat"
                 android:textStyle="bold"
                 android:textSize="14sp"
                 android:paddingBottom="8dp" />
@@ -122,22 +111,22 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:padding="12dp"
-            android:background="#ffffff"
+            android:background="@color/white"
             android:elevation="4dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:paddingBottom="8dp">
-
+                android:paddingBottom="10dp">
                 <Spinner
-                    android:id="@+id/prioritySpinner"
+                    android:id="@+id/destinationSpinner"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:entries="@array/priority_options"
+                    android:hint="@string/destination_hint"
                     android:paddingEnd="8dp" />
+
             </LinearLayout>
 
             <LinearLayout
@@ -150,25 +139,17 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="Type message..."
+                    android:hint="@string/message_hint"
                     android:inputType="text"
                     android:maxLines="3"
                     android:paddingEnd="8dp" />
-                <Spinner
-                    android:id="@+id/destinationSpinner"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="Select destination"
-                    android:paddingEnd="8dp" />
-
                 <Button
                     android:id="@+id/sendButton"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Send"
-                    android:backgroundTint="#4CAF50"
-                    android:textColor="#ffffff" />
+                    android:text="@string/send_button"
+                    android:backgroundTint="@color/accent_green"
+                    android:textColor="@color/text_white" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

@@ -34,10 +34,6 @@ public abstract class AppDatabase extends RoomDatabase {
         @Override
         public void migrate(@NonNull SupportSQLiteDatabase database) {
             Log.d(TAG, "Migrating database from version 4 to 5");
-            // Example: If you added a new column, add migration here
-            // database.execSQL("ALTER TABLE messages ADD COLUMN new_column TEXT");
-
-            // For now, no schema changes between 4 and 5, but structure is ready
             Log.d(TAG, "Migration 4->5 complete");
         }
     };

@@ -14,11 +14,12 @@
     <color name="text_primary">#212121</color>
     <color name="text_secondary">#757575</color>
     <color name="text_hint">#BDBDBD</color>
+    <color name="text_white">#FFFFFF</color>
 
     <!-- Status Colors -->
-    <color name="success_green">#4CAF50</color>
-    <color name="warning_yellow">#FFC107</color>
-    <color name="error_red">#F44336</color>
+    <color name="status_connected">#4CAF50</color>
+    <color name="status_disconnected">#F44336</color>
+    <color name="status_discovering">#FF9800</color>
 
     <!-- UI Elements -->
     <color name="divider_gray">#E0E0E0</color>

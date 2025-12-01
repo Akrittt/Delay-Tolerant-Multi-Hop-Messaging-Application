@@ -70,7 +70,14 @@ public class ConnectionManager {
 
     private final Queue<Message> messageQueue = new ConcurrentLinkedQueue<>();
     private static final int MAX_QUEUE_SIZE = 50;
+    private Handler forwardingHandler;
+    private static final long FORWARDING_INTERVAL = 30000;
 
+    // Dual-stack transport flags
+    private boolean bluetoothEnabled = true;
+    private boolean wifiDirectEnabled = false;
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     public ConnectionManager(Context context, MainViewModel viewModel,
                              BluetoothManager bluetoothManager,
                              WifiDirectManager wifiDirectManager) {
@@ -86,8 +93,74 @@ public class ConnectionManager {
     }
 
     /**
+     * Start connection manager
+     */
+    public void start() {
+        Log.d(TAG, "═══════════════════════════════════════");
+        Log.d(TAG, "  Starting Dual-Stack Transport");
+        Log.d(TAG, "═══════════════════════════════════════");
+
+        // ALWAYS start Bluetooth for mesh
+        if (bluetoothEnabled && bluetoothManager.isAvailable()) {
+            bluetoothManager.start();
+            Log.d(TAG, "✓ Bluetooth mesh started");
+        }
+
+        // start Wi-Fi Direct for range extension
+        if (wifiDirectEnabled && wifiDirectManager.isAvailable()) {
+            wifiDirectManager.start();
+            Log.d(TAG, "✓ Wi-Fi Direct relay started");
+        }
+
+        // Start automatic forwarding
+        startAutomaticMeshMode();
+        startPeriodicForwarding();
+
+        // Update UI
+        updateConnectionStatus();
+    }
+
+    /**
+     * Update UI to show dual-stack status
+     */
+    private void updateTransportStatus() {
+        int btConnections = 0;
+        boolean wifiConnected = false;
+
+        // Count Bluetooth connections
+        if (bluetoothManager.getServerThread() != null) {
+            btConnections += bluetoothManager.getServerThread().getConnectedClientCount();
+        }
+        if (bluetoothManager.getClientThreads() != null) {
+            btConnections += bluetoothManager.getClientThreads().size();
+        }
+
+        // Check Wi-Fi Direct connection
+        wifiConnected = wifiDirectManager.isConnected();
+
+        // Build status string
+        StringBuilder status = new StringBuilder();
+
+        if (btConnections > 0) {
+            status.append("BT Mesh: ").append(btConnections).append(" peer(s)");
+        } else {
+            status.append("BT Mesh: Searching...");
+        }
+
+        if (wifiDirectEnabled) {
+            status.append(" | WiFi Relay: ");
+            status.append(wifiConnected ? "Connected ✓" : "Standby");
+        }
+
+        viewModel.setConnectionStatus(btConnections > 0 || wifiConnected, status.toString());
+
+        Log.d(TAG, "Transport Status: " + status);
+    }
+
+    /**
      * Initialize message handler
      */
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private void initializeHandler() {
         messageHandler = new Handler(Looper.getMainLooper(), msg -> {
 
@@ -133,6 +206,9 @@ public class ConnectionManager {
                         Toast.LENGTH_SHORT).show();
                 new Handler(Looper.getMainLooper()).postDelayed(() -> {
                     flushMessageQueue();
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        triggerForwardingLogic();
+                    }, 1000);
                 }, 2000);
 
 
@@ -163,7 +239,16 @@ public class ConnectionManager {
         Log.d(TAG, "✓ Message handler initialized");
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private void triggerForwardingLogic() {
+        // Only forward via Bluetooth (mesh capable)
+        if (!bluetoothEnabled) {
+            Log.d(TAG, "Bluetooth disabled - skipping mesh forwarding");
+            return;
+        }
+
+        Log.d(TAG, "=== TRIGGERING BLUETOOTH MESH FORWARDING ===");
+
         viewModel.getMessagesToForward(new MessageRepository.RepositoryCallback<List<Message>>() {
             @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
             @Override
@@ -173,29 +258,41 @@ public class ConnectionManager {
                     return;
                 }
 
-                // Forward via active transport
-                MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
+                Log.d(TAG, "Found " + messages.size() + " messages to forward");
 
-                if (transport == MainViewModel.TransportType.BLUETOOTH) {
-                    // Get connected Bluetooth devices
-                    List<BluetoothDevice> connectedDevices = new ArrayList<>();
-                    // Add logic to get connected devices
+                // Get connected Bluetooth devices
+                List<BluetoothDevice> connectedDevices = new ArrayList<>();
 
-                    // Use routing protocol
-                    if ("SPRAY_AND_WAIT".equals(viewModel.getCurrentProtocol().getValue())) {
-                        sprayAndWaitRouting.forwardMessagesToMultipleDevicesBluetooth(
-                                messages, connectedDevices,
-                                bluetoothManager.getServerThread(),
-                                bluetoothManager.getClientThreads()
-                        );
-                    } else {
-                        epidemicRouting.forwardMessagesToMultipleDevicesBluetooth(
-                                messages, connectedDevices,
-                                bluetoothManager.getServerThread(),
-                                bluetoothManager.getClientThreads()
-                        );
+                List<BluetoothClientThread> clientThreads = bluetoothManager.getClientThreads();
+                if (clientThreads != null) {
+                    for (BluetoothClientThread client : clientThreads) {
+                        if (client != null && client.isConnected()) {
+                            BluetoothDevice device = client.getRemoteDevice();
+                            if (device != null) {
+                                connectedDevices.add(device);
+                            }
+                        }
                     }
                 }
+
+                Log.d(TAG, "Forwarding to " + connectedDevices.size() + " Bluetooth device(s)");
+
+                // Use routing protocol
+                if ("SPRAY_AND_WAIT".equals(viewModel.getCurrentProtocol().getValue())) {
+                    sprayAndWaitRouting.forwardMessagesToMultipleDevicesBluetooth(
+                            messages, connectedDevices,
+                            bluetoothManager.getServerThread(),
+                            bluetoothManager.getClientThreads()
+                    );
+                } else {
+                    epidemicRouting.forwardMessagesToMultipleDevicesBluetooth(
+                            messages, connectedDevices,
+                            bluetoothManager.getServerThread(),
+                            bluetoothManager.getClientThreads()
+                    );
+                }
+
+                Log.d(TAG, "=== BLUETOOTH MESH FORWARDING COMPLETE ===");
             }
 
             @Override
@@ -234,24 +331,11 @@ public class ConnectionManager {
     }
 
     /**
-     * Start connection manager
-     */
-    public void start() {
-        Log.d(TAG, "ConnectionManager started");
-
-        // Start automatic mesh mode if Bluetooth
-        MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
-        if (transport == MainViewModel.TransportType.BLUETOOTH) {
-            startAutomaticMeshMode();
-        }
-    }
-
-    /**
      * Resume connections
      */
     public void resume() {
         Log.d(TAG, "ConnectionManager resumed");
-        // TODO: Re-register receivers
+        updateConnectionStatus();
     }
 
     /**
@@ -259,27 +343,18 @@ public class ConnectionManager {
      */
     public void pause() {
         Log.d(TAG, "ConnectionManager paused");
-        // TODO: Unregister receivers
+
     }
 
     /**
      * Connect to peer at position
      */
     public void connectToPeer(int position) {
-        MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
-
-        if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
-            // WiFi Direct connection
-            var device = wifiDirectManager.getDeviceAtPosition(position);
-            if (device != null) {
-                wifiDirectManager.connectToPeer(device);
-            }
-
-        } else if (transport == MainViewModel.TransportType.BLUETOOTH) {
-            var device = bluetoothManager.getDeviceAtPosition(position);
-            if (device != null) {
-                bluetoothManager.connectToDevice(device);
-            }
+        var device = bluetoothManager.getDeviceAtPosition(position);
+        if (device != null) {
+            bluetoothManager.connectToDevice(device);
+        }else {
+            Log.w(TAG, "Device at position " + position + " not found");
         }
     }
 
@@ -288,21 +363,13 @@ public class ConnectionManager {
      */
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     public void addFriendAtPosition(int position) {
-        MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
-
-        if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
-            var device = wifiDirectManager.getDeviceAtPosition(position);
-            if (device != null) {
-                addFriend(device.deviceAddress, device.deviceName);
-            }
-
-        } else if (transport == MainViewModel.TransportType.BLUETOOTH) {
-            var device = bluetoothManager.getDeviceAtPosition(position);
-            if(device != null){
-                String deviceId = device.getAddress();
-                String deviceName = getDeviceName(device);
-                addFriend(deviceId,deviceName);
-            }
+        var device = bluetoothManager.getDeviceAtPosition(position);
+        if (device != null) {
+            String deviceId = device.getAddress();
+            String deviceName = getDeviceName(device);
+            addFriend(deviceId, deviceName);
+        } else {
+            Log.w(TAG, "Device at position " + position + " not found");
         }
     }
     @SuppressLint("MissingPermission")
@@ -348,75 +415,83 @@ public class ConnectionManager {
         executorService.execute(() -> {
             try {
                 boolean sent = false;
-                int devicesSentTo = 0;
+                int totalDevicesSentTo = 0;
 
-                MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
+                // ═══ BLUETOOTH MESH (Primary) ═══
+                if (bluetoothEnabled) {
+                    int btDevices = 0;
 
-                if (transport == MainViewModel.TransportType.BLUETOOTH) {
                     BluetoothServerThread btServerThread = bluetoothManager.getServerThread();
                     List<BluetoothClientThread> btClientThreads = bluetoothManager.getClientThreads();
 
-                    // Send via all connected Bluetooth clients
+                    // Send via all Bluetooth client connections
                     if (btClientThreads != null) {
                         for (BluetoothClientThread client : btClientThreads) {
                             if (client != null && client.isConnected()) {
                                 client.write(message);
                                 sent = true;
-                                devicesSentTo++;
+                                btDevices++;
                             }
                         }
                     }
 
-                    // Broadcast via server thread
+                    // Broadcast via Bluetooth server
                     if (btServerThread != null && btServerThread.isAlive()) {
-                        btServerThread.broadcastToAll(message);
-                        sent = true;
-                        devicesSentTo++;
+                        int serverClients = btServerThread.getConnectedClientCount();
+                        if (serverClients > 0) {
+                            btServerThread.broadcastToAll(message);
+                            sent = true;
+                            btDevices += serverClients;
+                        }
                     }
 
-                    Log.d(TAG, "✓ Bluetooth: Sent to " + devicesSentTo + " device(s)");
+                    totalDevicesSentTo += btDevices;
 
-                } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
-                    ServerThread serverThread = wifiDirectManager.getServerThread();
-                    ClientThread clientThread = wifiDirectManager.getClientThread();
-
-                    if (serverThread != null && serverThread.isConnected()) {
-                        serverThread.write(message);
-                        sent = true;
-                        devicesSentTo++;
-                        Log.d(TAG, "✓ Sent via WiFi Direct ServerThread");
-                    } else if (clientThread != null && clientThread.isConnected()) {
-                        clientThread.write(message);
-                        sent = true;
-                        devicesSentTo++;
-                        Log.d(TAG, "✓ Sent via WiFi Direct ClientThread");
+                    if (btDevices > 0) {
+                        Log.d(TAG, "✓ Bluetooth: Sent to " + btDevices + " device(s)");
                     }
                 }
 
-                // ✅ Queue if not sent
+                // ═══ WI-FI DIRECT RELAY (Range Extension) ═══
+                if (wifiDirectEnabled && wifiDirectManager.isConnected()) {
+                    ServerThread wifiServer = wifiDirectManager.getServerThread();
+                    ClientThread wifiClient = wifiDirectManager.getClientThread();
+
+                    if (wifiServer != null && wifiServer.isConnected()) {
+                        wifiServer.write(message);
+                        sent = true;
+                        totalDevicesSentTo++;
+                        Log.d(TAG, "✓ Wi-Fi Direct: Relayed via server");
+                    } else if (wifiClient != null && wifiClient.isConnected()) {
+                        wifiClient.write(message);
+                        sent = true;
+                        totalDevicesSentTo++;
+                        Log.d(TAG, "✓ Wi-Fi Direct: Relayed via client");
+                    }
+                }
+
+                // ═══ QUEUE IF NOT SENT ═══
                 if (!sent) {
                     queueMessage(message);
-                    Log.d(TAG, "📥 Message queued: " + message.message_id +
-                            " (Queue: " + messageQueue.size() + ")");
+                    Log.d(TAG, "📥 Message queued: " + message.message_id);
                 }
 
                 final boolean finalSent = sent;
-                final int finalDevicesSentTo = devicesSentTo;
+                final int finalDevicesSentTo = totalDevicesSentTo;
 
                 // Update UI
                 new Handler(Looper.getMainLooper()).post(() -> {
                     if (finalSent) {
-                        String successMsg = finalDevicesSentTo > 1
-                                ? "✓ Sent to " + finalDevicesSentTo + " devices"
-                                : "✓ Message sent";
-                        Toast.makeText(context, successMsg, Toast.LENGTH_SHORT).show();
+                        String msg = "✓ Sent to " + finalDevicesSentTo + " device(s)";
+                        if (bluetoothEnabled && wifiDirectEnabled) {
+                            msg += " (BT+WiFi)";
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
                     }
-                    // Don't show "queued" toast here - already shown in MainActivity
                 });
 
             } catch (Exception e) {
                 Log.e(TAG, "Error sending message", e);
-
                 new Handler(Looper.getMainLooper()).post(() ->
                         Toast.makeText(context, "❌ Send error: " + e.getMessage(),
                                 Toast.LENGTH_SHORT).show()
@@ -429,16 +504,17 @@ public class ConnectionManager {
      * Add message to queue (with size limit)
      */
     private void queueMessage(Message message) {
-        if (messageQueue.size() >= MAX_QUEUE_SIZE) {
-            // Remove oldest message
-            Message removed = messageQueue.poll();
-            Log.w(TAG, "⚠️ Queue full - removed oldest message: " +
-                    (removed != null ? removed.message_id : "unknown"));
-        }
+        synchronized (messageQueue) {
+            if (messageQueue.size() >= MAX_QUEUE_SIZE) {
+                Message removed = messageQueue.poll();
+                Log.w(TAG, "⚠️ Queue full - removed oldest message: " +
+                        (removed != null ? removed.message_id : "unknown"));
+            }
 
-        messageQueue.offer(message);
-        Log.d(TAG, "📥 Queued message: " + message.message_id +
-                " (Queue size: " + messageQueue.size() + ")");
+            messageQueue.offer(message);
+            Log.d(TAG, "📥 Queued message: " + message.message_id +
+                    " (Queue size: " + messageQueue.size() + ")");
+        }
     }
 
     /**
@@ -503,9 +579,8 @@ public class ConnectionManager {
      * Send message directly without queueing
      */
     private void sendMessageDirectly(Message message) throws Exception {
-        MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
-
-        if (transport == MainViewModel.TransportType.BLUETOOTH) {
+        // Send via Bluetooth
+        if (bluetoothEnabled) {
             BluetoothServerThread btServerThread = bluetoothManager.getServerThread();
             List<BluetoothClientThread> btClientThreads = bluetoothManager.getClientThreads();
 
@@ -520,8 +595,10 @@ public class ConnectionManager {
             if (btServerThread != null && btServerThread.isAlive()) {
                 btServerThread.broadcastToAll(message);
             }
+        }
 
-        } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
+        // Send via Wi-Fi Direct (if enabled)
+        if (wifiDirectEnabled && wifiDirectManager.isConnected()) {
             ServerThread serverThread = wifiDirectManager.getServerThread();
             ClientThread clientThread = wifiDirectManager.getClientThread();
 
@@ -637,10 +714,25 @@ public class ConnectionManager {
                 return;
             }
 
-            viewModel.updateMessage(message, null);
+            // Update in database
+            viewModel.updateMessage(message, new MessageRepository.RepositoryCallback<Void>() {
+                @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                @Override
+                public void onSuccess(Void result) {
+                    Log.d(TAG, "✓ Message stored, triggering mesh forwarding");
 
-            // Forward via active transport
-            transmitMessage(message);
+                    // Forward via all available transport
+                    transmitMessage(message);
+
+                    // Trigger mesh forwarding
+                    triggerForwardingLogic();
+                }
+
+                @Override
+                public void onError(Exception e) {
+                    Log.e(TAG, "Error storing message", e);
+                }
+            });
         }
     }
 
@@ -679,17 +771,13 @@ public class ConnectionManager {
             @Override
             public void run() {
                 Log.d(TAG, "Auto-discovery scan...");
-
-                if (bluetoothManager.isAvailable()) {
+                if (bluetoothEnabled && bluetoothManager.isAvailable()) {
                     bluetoothManager.startDiscovery();
                 }
-
-                // Repeat every 60 seconds
-                discoveryHandler.postDelayed(this, 60000);
+                discoveryHandler.postDelayed(this, 60000); // Every 60s
             }
         };
 
-        // Start first scan immediately
         discoveryHandler.post(discoveryRunnable);
     }
 
@@ -697,20 +785,117 @@ public class ConnectionManager {
      * Update connection status
      */
     private void updateConnectionStatus() {
-        MainViewModel.TransportType transport = viewModel.getActiveTransport().getValue();
+        int btConnections = 0;
+        boolean wifiConnected = false;
 
-        if (transport == MainViewModel.TransportType.BLUETOOTH) {
-            bluetoothManager.updateConnectionStatus();
-
-        } else if (transport == MainViewModel.TransportType.WIFI_DIRECT) {
-            if (wifiDirectManager.isConnected()) {
-                viewModel.setConnectionStatus(true, "Connected");
-            } else {
-                viewModel.setConnectionStatus(false, "Disconnected");
+        // Count Bluetooth connections
+        if (bluetoothManager.getServerThread() != null) {
+            btConnections += bluetoothManager.getServerThread().getConnectedClientCount();
+        }
+        if (bluetoothManager.getClientThreads() != null) {
+            for (BluetoothClientThread client : bluetoothManager.getClientThreads()) {
+                if (client != null && client.isConnected()) {
+                    btConnections++;
+                }
             }
         }
+
+        // Check Wi-Fi Direct connection
+        wifiConnected = wifiDirectEnabled && wifiDirectManager.isConnected();
+
+        // Build status string
+        StringBuilder status = new StringBuilder();
+
+        if (btConnections > 0) {
+            status.append("BT Mesh: ").append(btConnections).append(" peer(s)");
+        } else {
+            status.append("BT Mesh: Searching...");
+        }
+
+        if (wifiDirectEnabled) {
+            status.append(" | WiFi Relay: ");
+            status.append(wifiConnected ? "Connected ✓" : "Standby");
+        }
+
+        viewModel.setConnectionStatus(btConnections > 0 || wifiConnected, status.toString());
+
+        Log.d(TAG, "Connection Status: " + status);
     }
 
+    /**
+     * Enable/disable Wi-Fi Direct relay
+     */
+    public void enableWifiDirectRelay(boolean enable) {
+        wifiDirectEnabled = enable;
+
+        if (enable) {
+            if (wifiDirectManager.isAvailable()) {
+                wifiDirectManager.start();
+                Toast.makeText(context, "✓ Wi-Fi Direct relay enabled (range boost)",
+                        Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(context, "❌ Wi-Fi Direct not available",
+                        Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            wifiDirectManager.stop();
+            Toast.makeText(context, "Wi-Fi Direct relay disabled",
+                    Toast.LENGTH_SHORT).show();
+        }
+
+        updateTransportStatus();
+    }
+
+    /**
+     * FIXED: Start periodic forwarding of stored messages
+     */
+    private void startPeriodicForwarding() {
+        if (forwardingHandler != null) {
+            forwardingHandler.removeCallbacksAndMessages(null);
+        }
+
+        forwardingHandler = new Handler(Looper.getMainLooper());
+
+        Runnable forwardingRunnable = new Runnable() {
+            @Override
+            public void run() {
+                // Check if we have active connections
+                boolean hasBluetoothConnections = false;
+
+                BluetoothServerThread server = bluetoothManager.getServerThread();
+                List<BluetoothClientThread> clients = bluetoothManager.getClientThreads();
+
+                hasBluetoothConnections = (server != null && server.getConnectedClientCount() > 0) ||
+                        (clients != null && !clients.isEmpty());
+
+                if (hasBluetoothConnections) {
+                    Log.d(TAG, "⏰ Periodic forwarding - triggering");
+                    triggerForwardingLogic();
+                }
+
+                updateConnectionStatus();
+
+                // Schedule next check
+                if (forwardingHandler != null) {
+                    forwardingHandler.postDelayed(this, FORWARDING_INTERVAL);
+                }
+            }
+        };
+
+        forwardingHandler.postDelayed(forwardingRunnable, FORWARDING_INTERVAL);
+        Log.d(TAG, "✓ Periodic forwarding started (every 30s)");
+    }
+
+    /**
+     * Stop periodic forwarding
+     */
+    private void stopPeriodicForwarding() {
+        if (forwardingHandler != null) {
+            forwardingHandler.removeCallbacksAndMessages(null);
+            forwardingHandler = null;
+            Log.d(TAG, "✓ Periodic forwarding stopped");
+        }
+    }
 
     /**
      * Get message handler
@@ -723,6 +908,8 @@ public class ConnectionManager {
      * Shutdown
      */
     public void shutdown() {
+        stopPeriodicForwarding();
+
         if (executorService != null && !executorService.isShutdown()) {
             executorService.shutdown();
         }

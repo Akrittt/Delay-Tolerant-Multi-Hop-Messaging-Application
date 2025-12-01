@@ -56,7 +56,7 @@ public class ClientThread extends Thread {
         try {
             socket = new Socket();
             socket.connect(new java.net.InetSocketAddress(hostAddress, 8888), CONNECTION_TIMEOUT);
-            socket.setSoTimeout(60000);  // No timeout for reads
+            socket.setSoTimeout(0);  // No timeout for reads
             Log.d(TAG, "Client socket timeout set to: no timeout");
             Log.d(TAG, "Connected to server at: " + hostAddress);
 

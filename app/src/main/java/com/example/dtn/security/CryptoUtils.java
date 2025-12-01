@@ -64,7 +64,6 @@ public class CryptoUtils {
     }
 
     /**
-     * FIXED: Encrypt plaintext using AES-256-CBC with random IV
      * Returns: [IV (16 bytes) | Ciphertext | HMAC (32 bytes)]
      */
     public static byte[] encrypt(String plaintext) throws Exception {
@@ -106,7 +105,6 @@ public class CryptoUtils {
     }
 
     /**
-     * FIXED: Decrypt ciphertext using AES-256-CBC
      * Expects: [IV (16 bytes) | Ciphertext | HMAC (32 bytes)]
      * Validates HMAC before decryption
      */

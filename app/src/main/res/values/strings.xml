@@ -1,19 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">DTN Messenger</string>
+    <string name="toolbar_title">DTN MESSAGE</string>
 
     <!-- Status Messages -->
     <string name="status_disconnected">Status: Disconnected</string>
     <string name="status_connected_host">Status: Connected as Host</string>
     <string name="status_connected_client">Status: Connected as Client</string>
     <string name="status_discovering">Status: Discovering Peers...</string>
+    <string name="protocol_display_default">Protocol: Epidemic Routing 🟠</string>
+    <string name="transport_display_default">Transport: Wi-Fi Direct 📡 (Fast)</string>
+
 
     <!-- Protocol Messages -->
     <string name="protocol_epidemic">Protocol: Epidemic Routing</string>
     <string name="protocol_spray_wait">Protocol: Spray and Wait</string>
 
     <!-- Section Headers -->
-    <string name="header_peers">📱 Available Peers</string>
+    <string name="header_peers">📱 Available Peers:</string>
+    <string name="header_chat">💬 Chat:</string>
     <string name="header_messages">💬 Chat Messages</string>
 
     <!-- Empty State Messages -->
@@ -21,6 +26,7 @@
     <string name="no_messages_yet">No messages yet. Send your first message!</string>
 
     <!-- Button Labels -->
+    <string name="send_button">Send</string>
     <string name="send_message">Send Message</string>
     <string name="connect">Connect</string>
     <string name="disconnect">Disconnect</string>
@@ -40,6 +46,7 @@
     <string name="permission_required">Permissions required</string>
 
     <!-- Input Hints -->
-    <string name="message_hint">Type your message...</string>
-    <string name="priority_label">Priority:</string>
+    <string name="message_hint">Type message...</string>
+    <string name="destination_hint">Select destination</string>
+
 </resources>

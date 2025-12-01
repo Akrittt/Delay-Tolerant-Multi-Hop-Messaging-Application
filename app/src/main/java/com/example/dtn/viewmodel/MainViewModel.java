@@ -30,7 +30,7 @@ public class MainViewModel extends AndroidViewModel {
 
     // Connection state
     private final MutableLiveData<Boolean> isConnected = new MutableLiveData<>(false);
-    private final MutableLiveData<String> connectionStatus = new MutableLiveData<>("Disconnected");
+    private final MutableLiveData<String> connectionStatus =  new MutableLiveData<>("BT Mesh: Searching...");
     private final MutableLiveData<Integer> connectionColor = new MutableLiveData<>(0xFFF44336); // Red
 
     // Protocol state
@@ -38,8 +38,6 @@ public class MainViewModel extends AndroidViewModel {
     private final MutableLiveData<String> protocolDisplay = new MutableLiveData<>("Protocol: Epidemic Routing 🟠");
 
     // Transport state
-    public enum TransportType { WIFI_DIRECT, BLUETOOTH }
-    private final MutableLiveData<TransportType> activeTransport = new MutableLiveData<>(TransportType.WIFI_DIRECT);
     private final MutableLiveData<String> transportDisplay = new MutableLiveData<>("Transport: Wi-Fi Direct 📡 (Fast)");
 
     // Device info
@@ -74,7 +72,6 @@ public class MainViewModel extends AndroidViewModel {
     public LiveData<String> getProtocolDisplay() { return protocolDisplay; }
 
     // Transport
-    public LiveData<TransportType> getActiveTransport() { return activeTransport; }
     public LiveData<String> getTransportDisplay() { return transportDisplay; }
 
     // Device
@@ -139,20 +136,20 @@ public class MainViewModel extends AndroidViewModel {
         Log.d(TAG, "Protocol changed to: " + protocol);
     }
 
-    /**
-     * Switch transport
-     */
-    public void setTransport(TransportType transport) {
-        activeTransport.postValue(transport);
-
-        if (transport == TransportType.WIFI_DIRECT) {
-            transportDisplay.postValue("Transport: Wi-Fi Direct 📡 (Fast)");
-        } else {
-            transportDisplay.postValue("Transport: Bluetooth 📱 (Compatible)");
-        }
-
-        Log.d(TAG, "Transport changed to: " + transport);
-    }
+//    /**
+//     * Switch transport
+//     */
+//    public void setTransport(TransportType transport) {
+//        activeTransport.postValue(transport);
+//
+//        if (transport == TransportType.WIFI_DIRECT) {
+//            transportDisplay.postValue("Transport: Wi-Fi Direct 📡 (Fast)");
+//        } else {
+//            transportDisplay.postValue("Transport: Bluetooth 📱 (Compatible)");
+//        }
+//
+//        Log.d(TAG, "Transport changed to: " + transport);
+//    }
 
     /**
      * Set own device ID
@@ -238,7 +235,8 @@ public class MainViewModel extends AndroidViewModel {
      * Get messages to forward
      */
     public void getMessagesToForward(MessageRepository.RepositoryCallback<List<Message>> callback) {
-        messageRepository.getMessagesToForward(System.currentTimeMillis(), callback);
+        long currentTime = System.currentTimeMillis();
+        messageRepository.getMessagesToForward(currentTime, callback);
     }
 
     /**
