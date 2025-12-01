@@ -380,12 +380,14 @@ public class WifiDirectManager {
      */
     private void updateDeviceIdFromWifiDirect() {
         if (manager != null && channel != null) {
-            manager.requestDeviceInfo(channel, device -> {
-                if (device != null && device.deviceName != null) {
-                    viewModel.setOwnDeviceId(device.deviceName);
-                    Log.d(TAG, "✓ Device ID updated: " + device.deviceName);
-                }
-            });
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                manager.requestDeviceInfo(channel, device -> {
+                    if (device != null && device.deviceName != null) {
+                        viewModel.setOwnDeviceId(device.deviceName);
+                        Log.d(TAG, "✓ Device ID updated: " + device.deviceName);
+                    }
+                });
+            }
         }
     }
 

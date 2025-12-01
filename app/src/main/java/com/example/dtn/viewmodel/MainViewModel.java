@@ -76,17 +76,13 @@ public class MainViewModel extends AndroidViewModel {
 
     // Device
     public LiveData<String> getOwnDeviceId() { return ownDeviceId; }
-    public LiveData<Boolean> getIsDeviceIdReady() { return isDeviceIdReady; }
 
     // Messages & Peers
     public LiveData<List<ChatMessage>> getChatMessages() { return chatMessages; }
     public LiveData<List<String>> getDiscoveredPeers() { return discoveredPeers; }
 
     // Repository LiveData
-    public LiveData<List<Message>> getAllMessages() { return messageRepository.getAllMessages(); }
     public LiveData<List<Friend>> getAllFriends() { return friendRepository.getAllFriends(); }
-    public LiveData<Integer> getMessageCount() { return messageRepository.getMessageCount(); }
-    public LiveData<Integer> getFriendCount() { return friendRepository.getFriendCount(); }
 
     // ==================== State Setters ====================
 
@@ -135,21 +131,6 @@ public class MainViewModel extends AndroidViewModel {
 
         Log.d(TAG, "Protocol changed to: " + protocol);
     }
-
-//    /**
-//     * Switch transport
-//     */
-//    public void setTransport(TransportType transport) {
-//        activeTransport.postValue(transport);
-//
-//        if (transport == TransportType.WIFI_DIRECT) {
-//            transportDisplay.postValue("Transport: Wi-Fi Direct 📡 (Fast)");
-//        } else {
-//            transportDisplay.postValue("Transport: Bluetooth 📱 (Compatible)");
-//        }
-//
-//        Log.d(TAG, "Transport changed to: " + transport);
-//    }
 
     /**
      * Set own device ID
@@ -244,20 +225,6 @@ public class MainViewModel extends AndroidViewModel {
      */
     public void insertOrUpdateFriend(Friend friend, FriendRepository.RepositoryCallback<Void> callback) {
         friendRepository.insertOrUpdate(friend, callback);
-    }
-
-    /**
-     * Update friend encounter time
-     */
-    public void updateFriendEncounter(String deviceId, FriendRepository.RepositoryCallback<Void> callback) {
-        friendRepository.updateLastEncounter(deviceId, callback);
-    }
-
-    /**
-     * Check if device is a friend
-     */
-    public void isFriend(String deviceId, FriendRepository.RepositoryCallback<Boolean> callback) {
-        friendRepository.isFriend(deviceId, callback);
     }
 
     // ==================== Cleanup ====================

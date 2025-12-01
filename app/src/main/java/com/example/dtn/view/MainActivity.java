@@ -340,7 +340,13 @@ public class MainActivity extends AppCompatActivity {
             message.priority = 0;
             message.ttl_timestamp = System.currentTimeMillis() + (2 * 60 * 60 * 1000); // 2 hours
             message.hop_count = 0;
-            message.copy_count = 6;
+
+            String protocol = viewModel.getCurrentProtocol().getValue();
+            if ("SPRAY_AND_WAIT".equals(protocol)) {
+                message.copy_count = 6;  // Spray-and-Wait
+            } else {
+                message.copy_count = 1;  // Epidemic
+            }
 
             // Add to UI immediately with queued status
             boolean connected = Boolean.TRUE.equals(viewModel.getIsConnected().getValue());

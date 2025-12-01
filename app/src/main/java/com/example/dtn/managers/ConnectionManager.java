@@ -27,7 +27,6 @@ import com.example.dtn.security.CryptoUtils;
 import com.example.dtn.viewmodel.MainViewModel;
 
 import java.util.ArrayList;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
 import java.util.UUID;
@@ -37,7 +36,6 @@ import java.util.concurrent.Executors;
 
 /**
  * ConnectionManager - Coordinates all connection operations
- *
  * RESPONSIBILITIES:
  * - Coordinate between Bluetooth and WiFi Direct
  * - Handle message sending/receiving
@@ -857,6 +855,7 @@ public class ConnectionManager {
         forwardingHandler = new Handler(Looper.getMainLooper());
 
         Runnable forwardingRunnable = new Runnable() {
+            @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
             @Override
             public void run() {
                 // Check if we have active connections
